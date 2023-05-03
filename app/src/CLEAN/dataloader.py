@@ -36,7 +36,7 @@ def mine_negative(anchor, id_ec, ec_id, mine_neg):
     pos_ec = random.choice(anchor_ec)
     neg_ec = mine_neg[pos_ec]['negative']
     weights = mine_neg[pos_ec]['weights']
-    print(weights)
+    # print(weights)
     
     if np.any(np.isnan(weights)):
         weights = np.ones_like(weights) / len(weights)
