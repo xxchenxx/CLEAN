@@ -1,7 +1,7 @@
 import torch
 import random
 from .utils import format_esm
-
+import numpy as np
 
 def mine_hard_negative(dist_map, knn=10):
     #print("The number of unique EC numbers: ", len(dist_map.keys()))
@@ -37,6 +37,10 @@ def mine_negative(anchor, id_ec, ec_id, mine_neg):
     neg_ec = mine_neg[pos_ec]['negative']
     weights = mine_neg[pos_ec]['weights']
     print(weights)
+    
+    if np.any(np.isnan(weights)):
+        weights = np.ones_like(weights) / len(weights)
+
     result_ec = random.choices(neg_ec, weights=weights, k=1)[0]
     while result_ec in anchor_ec:
         result_ec = random.choices(neg_ec, weights=weights, k=1)[0]
