@@ -36,6 +36,7 @@ def mine_negative(anchor, id_ec, ec_id, mine_neg):
     pos_ec = random.choice(anchor_ec)
     neg_ec = mine_neg[pos_ec]['negative']
     weights = mine_neg[pos_ec]['weights']
+    print(weights)
     result_ec = random.choices(neg_ec, weights=weights, k=1)[0]
     while result_ec in anchor_ec:
         result_ec = random.choices(neg_ec, weights=weights, k=1)[0]
