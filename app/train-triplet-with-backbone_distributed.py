@@ -28,6 +28,32 @@ from torch.distributed.fsdp.wrap import (
 from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
 from Bio import SeqIO
 
+
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    CPUOffload,
+    BackwardPrefetch,
+)
+from torch.distributed.fsdp.wrap import (
+    size_based_auto_wrap_policy,
+    enable_wrap,
+    wrap,
+)
+
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+
+    # initialize the process group
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+def cleanup():
+    dist.destroy_process_group()
+
 def parse():
     parser = argparse.ArgumentParser()
     parser.add_argument('-l', '--learning_rate', type=float, default=5e-4)
@@ -50,8 +76,9 @@ def get_dataloader(dist_map, id_ec, ec_id, args):
     }
     negative = mine_hard_negative(dist_map, 30)
     train_data = Triplet_dataset_with_mine_EC_text(id_ec, ec_id, negative)
+    sampler = DistributedSampler(train_data, rank=args.rank, num_replicas=args.world_size, shuffle=True)
     train_loader = torch.utils.data.DataLoader(train_data, **params)
-    return train_loader
+    return train_loader, sampler
 
 
 def train(model, args, epoch, train_loader,
@@ -145,10 +172,13 @@ def train(model, args, epoch, train_loader,
     return total_loss/(batch + 1)
 
 
-def main():
+def main(rank, world_size):
+    setup(rank, world_size)
     seed_everything()
     ensure_dirs('./data/model')
     args = parse()
+    args.rank = rank
+    args.world_size = world_size
     torch.backends.cudnn.benchmark = True
     id_ec, ec_id_dict = get_ec_id_dict('./data/' + args.training_data + '.csv')
     ec_id = {key: list(ec_id_dict[key]) for key in ec_id_dict.keys()}
@@ -166,7 +196,7 @@ def main():
     #======================== ESM embedding  ===================#
     # loading ESM embedding for dist map
     esm_model, alphabet = pretrained.load_model_and_alphabet(
-        'esm1b_t33_650M_UR50S')
+        'esm1b_t33_650M_UR50S.pt')
     batch_converter = alphabet.get_batch_converter()
     esm_model = esm_model.to(device).half()
     esm_model.eval()
@@ -183,7 +213,7 @@ def main():
     esm_optimizer = torch.optim.Adam(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
     criterion = nn.TripletMarginLoss(margin=1, reduction='mean')
     best_loss = float('inf')
-    train_loader = get_dataloader(dist_map, id_ec, ec_id, args)
+    train_loader, sampler = get_dataloader(dist_map, id_ec, ec_id, args)
     if args.use_extra_attention:
         query = nn.Linear(1280, 64, bias=False).to(device)
         key = nn.Linear(64, 1280, bias=False).to(device)

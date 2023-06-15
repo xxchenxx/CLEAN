@@ -1,4 +1,4 @@
-build.py
+setup.py
 src/CLEAN/__init__.py
 src/CLEAN/dataloader.py
 src/CLEAN/distance_map.py

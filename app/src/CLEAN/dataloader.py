@@ -60,11 +60,12 @@ def random_positive(id, id_ec, ec_id):
 
 class Triplet_dataset_with_mine_EC(torch.utils.data.Dataset):
 
-    def __init__(self, id_ec, ec_id, mine_neg):
+    def __init__(self, id_ec, ec_id, mine_neg, path='data/esm_data/'):
         self.id_ec = id_ec
         self.ec_id = ec_id
         self.full_list = []
         self.mine_neg = mine_neg
+        self.path = path
         for ec in ec_id.keys():
             if '-' not in ec:
                 self.full_list.append(ec)
@@ -77,11 +78,11 @@ class Triplet_dataset_with_mine_EC(torch.utils.data.Dataset):
         anchor = random.choice(self.ec_id[anchor_ec])
         pos = random_positive(anchor, self.id_ec, self.ec_id)
         neg = mine_negative(anchor, self.id_ec, self.ec_id, self.mine_neg)
-        a = torch.load('./data/esm_data/' + anchor + '.pt')
-        p = torch.load('./data/esm_data/' + pos + '.pt')
-        n = torch.load('./data/esm_data/' + neg + '.pt')
+        a = torch.load(f'{self.path}/' + anchor + '.pt')
+        p = torch.load(f'{self.path}/' + pos + '.pt')
+        n = torch.load(f'{self.path}/' + neg + '.pt')
         return format_esm(a), format_esm(p), format_esm(n)
-    
+
 class Triplet_dataset_with_mine_EC_text(torch.utils.data.Dataset):
 
     def __init__(self, id_ec, ec_id, mine_neg):
@@ -172,3 +173,58 @@ class MultiPosNeg_dataset_with_mine_EC_text(torch.utils.data.Dataset):
             n = neg
             data.append(n)
         return torch.cat(data)
+
+def mine_positive(anchor, id_ec, ec_id, mine_pos):
+    anchor_ec = id_ec[anchor]
+    positives = mine_pos[anchor_ec[0]]
+    result_ec = random.choice(positives["positive"])
+
+    pos_id = random.choice(ec_id[result_ec])
+    return pos_id
+
+
+class MoCo_dataset_with_mine_EC_text(torch.utils.data.Dataset):
+
+    def __init__(self, id_ec, ec_id, mine_pos):
+        self.id_ec = id_ec
+        self.ec_id = ec_id
+        self.full_list = []
+        self.mine_pos = mine_pos
+        for ec in ec_id.keys():
+            if '-' not in ec:
+                self.full_list.append(ec)
+
+    def __len__(self):
+        return len(self.full_list)
+
+    def __getitem__(self, index):
+        anchor_ec = self.full_list[index]
+        anchor = random.choice(self.ec_id[anchor_ec])
+        pos = mine_positive(anchor, self.id_ec, self.ec_id, self.mine_pos)
+        a = anchor
+        p = pos
+        return a, p
+
+
+class MoCo_dataset_with_mine_EC(torch.utils.data.Dataset):
+
+    def __init__(self, id_ec, ec_id, mine_pos, path='data/esm_data/'):
+        self.id_ec = id_ec
+        self.ec_id = ec_id
+        self.full_list = []
+        self.mine_pos = mine_pos
+        self.path = path
+        for ec in ec_id.keys():
+            if '-' not in ec:
+                self.full_list.append(ec)
+
+    def __len__(self):
+        return len(self.full_list)
+
+    def __getitem__(self, index):
+        anchor_ec = self.full_list[index]
+        anchor = random.choice(self.ec_id[anchor_ec])
+        pos = mine_positive(anchor, self.id_ec, self.ec_id, self.mine_pos)
+        a = torch.load(f'{self.path}/' + anchor + '.pt')
+        p = torch.load(f'{self.path}/' + pos + '.pt')
+        return format_esm(a), format_esm(p)

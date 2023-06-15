@@ -71,7 +71,10 @@ def load_model_and_alphabet_local(model_location):
     model_name = model_location.stem
     if _has_regression_weights(model_name):
         regression_location = str(model_location.with_suffix("")) + "-contact-regression.pt"
-        regression_data = torch.load(regression_location, map_location="cpu")
+        try:
+            regression_data = torch.load(regression_location, map_location="cpu")
+        except:
+            regression_data = None
     else:
         regression_data = None
     return load_model_and_alphabet_core(model_name, model_data, regression_data)

@@ -115,9 +115,9 @@ def ensure_dirs(path):
         os.makedirs(path)
         
 def retrive_esm1b_embedding(fasta_name):
-    esm_script = "esm/scripts/extract.py"
+    esm_script = "esm_source/scripts/extract.py"
     esm_out = "data/esm_data"
-    esm_type = "esm1b_t33_650M_UR50S"
+    esm_type = "esm1b_t33_650M_UR50S.pt"
     fasta_name = "data/" + fasta_name + ".fasta"
     command = ["python", esm_script, esm_type, 
               fasta_name, esm_out, "--include", "mean"]
@@ -180,6 +180,7 @@ def mutate_single_seq_ECs(train_file):
     for id in id_ec.keys():
         for ec in id_ec[id]:
             if ec in single_ec and not os.path.exists('./data/esm_data/' + id + '_1.pt'):
+            # if ec in single_ec:
                 single_id.add(id)
                 break
     print("Number of EC numbers with only one sequences:",len(single_ec))
