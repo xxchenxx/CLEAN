@@ -319,7 +319,8 @@ def main():
             if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
                 del dict1[key_]
                 print(f"{key_} founded!")
-                new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
+
+                new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt").mean(0).detach().cpu()
         
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
             SeqIO.write(dict1.values(), handle, 'fasta')
@@ -330,6 +331,7 @@ def main():
         data_loader = torch.utils.data.DataLoader(
             dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
         )
+        os.makedirs(args.temp_esm_path + f"/epoch{start_epoch}", exist_ok=True)
         with torch.no_grad():
             for batch_idx, (labels, strs, toks) in enumerate(data_loader):
                 print(
@@ -345,20 +347,17 @@ def main():
                         layer: t[i, 1 : 1023].clone()
                         for layer, t in representations.items()
                     }
-                    new_esm_emb[label] = out[33]
-        
-        os.makedirs(args.temp_esm_path + f"/epoch{start_epoch}", exist_ok=True)
-        for key_ in new_esm_emb:
-            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
-                torch.save(new_esm_emb[key_], args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
+                    torch.save(out[33], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
+                    new_esm_emb[label] = out[33].mean(0)
+                    
         
         new_esm_emb_2 = {}
         for key_ in list(dict2.keys()):
             if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
                 del dict2[key_]
                 print(f"{key_} founded!")
-                new_esm_emb_2[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
-        
+                new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt").mean(0)
+
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
             SeqIO.write(dict2.values(), handle, 'fasta')
 
@@ -383,16 +382,15 @@ def main():
                         layer: t[i, 1 : 1023].clone()
                         for layer, t in representations.items()
                     }
-                    new_esm_emb_2[label] = out[33]
-        for key_ in new_esm_emb_2:
-            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
-                torch.save(new_esm_emb_2[key_], args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
+
+                    torch.save(out[33], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
+                    # new_esm_emb_2[label] = out[33].mean(0)
 
         esm_emb = []
         new_esm_emb.update(new_esm_emb_2)
         for ec in list(ec_id_dict.keys()):
             ids_for_query = list(ec_id_dict[ec])
-            esm_to_cat = [new_esm_emb[id].mean(0) for id in ids_for_query]
+            esm_to_cat = [new_esm_emb[id] for id in ids_for_query]
             esm_emb = esm_emb + esm_to_cat
         esm_emb = torch.stack(esm_emb).to(device=device, dtype=dtype)
 
