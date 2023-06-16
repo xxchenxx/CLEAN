@@ -35,19 +35,22 @@ class FastaBatchedDataset(object):
             sequence_strs.append("".join(buf))
             cur_seq_label = None
             buf = []
-
+        prev_line = ''
         with open(fasta_file, "r") as infile:
             for line_idx, line in enumerate(infile):
-                if line.startswith(">"):  # label line
+                if line.startswith(">") and (not prev_line.endswith("<mask\n")):  # label line
                     _flush_current_seq()
                     line = line[1:].strip()
                     if len(line) > 0:
                         cur_seq_label = line
+                        print(cur_seq_label)
+                        print(prev_line)
                     else:
                         cur_seq_label = f"seqnum{line_idx:09d}"
                 else:  # sequence line
                     buf.append(line.strip())
-
+                prev_line = line
+        print(sequence_labels)
         _flush_current_seq()
 
         assert len(set(sequence_labels)) == len(

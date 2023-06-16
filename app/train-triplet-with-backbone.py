@@ -9,28 +9,11 @@ import torch.nn as nn
 import argparse
 from CLEAN.distance_map import get_dist_map
 import torch
-from torch.distributed import rpc
-
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    CPUOffload,
-    BackwardPrefetch,
-)
-from torch.distributed.fsdp.wrap import (
-    size_based_auto_wrap_policy,
-    enable_wrap,
-    wrap,
-)
 from Bio import SeqIO
+import numpy as np
 
 from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
-from Bio import SeqIO
-from torch.distributed.pipeline.sync import Pipe
-from torch.distributed.pipeline.sync.utils import partition_model
+
 
 def get_first_device(model):
         if model.devices:
@@ -73,9 +56,9 @@ def custom_collate(data): #(2)
     anchor = pad_sequence(anchor, batch_first=True)
     positive = pad_sequence(positive, batch_first=True)
     negative = pad_sequence(negative, batch_first=True)
-    anchor_attn_mask = torch.ones(anchor.shape[0], anchor.shape[1], anchor.shape[1]) * -torch.inf
-    positive_attn_mask = torch.ones(positive.shape[0], positive.shape[1], positive.shape[1]) * -torch.inf
-    negative_attn_mask = torch.ones(negative.shape[0], negative.shape[1], negative.shape[1]) * -torch.inf
+    anchor_attn_mask = torch.ones(anchor.shape[0], anchor.shape[1], anchor.shape[1]) * -np.inf
+    positive_attn_mask = torch.ones(positive.shape[0], positive.shape[1], positive.shape[1]) * -np.inf
+    negative_attn_mask = torch.ones(negative.shape[0], negative.shape[1], negative.shape[1]) * -np.inf
     
     for i in range(anchor_attn_mask.shape[0]):
         anchor_attn_mask[i, :, :anchor_length[i]] = 0
@@ -329,13 +312,10 @@ def main():
 
         file_1 = open('./data/' + args.training_data + '.fasta')
         file_2 = open('./data/' + args.training_data + '_single_seq_ECs.fasta')
-    
-        from Bio import SeqIO
         dict1 = SeqIO.to_dict(SeqIO.parse(file_1, "fasta"))
         dict2 = SeqIO.to_dict(SeqIO.parse(file_2, "fasta"))
-        dict1.update(dict2)
-        print(dict1)
-        for key in dict1:
+
+        for key in list(dict1.keys()):
             if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt"):
                 del dict1[key]
                 print(f"{key} founded!")
@@ -366,7 +346,50 @@ def main():
                         for layer, t in representations.items()
                     }
                     new_esm_emb[label] = out[33]
+        
+        os.makedirs(args.temp_esm_path + f"/epoch{start_epoch}", exist_ok=True)
+        for key in new_esm_emb:
+            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt"):
+                torch.save(new_esm_emb[key], args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt")
+        
+        new_esm_emb_2 = {}
+        for key in list(dict2.keys()):
+            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt"):
+                del dict2[key]
+                print(f"{key} founded!")
+                new_esm_emb_2[key] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt")
+        
+        with open(f'temp_{args.training_data}.fasta', 'w') as handle:
+            SeqIO.write(dict2.values(), handle, 'fasta')
+
+        dataset = FastaBatchedDataset.from_file(f'temp_{args.training_data}.fasta')
+        batches = dataset.get_batch_indices(
+            4096, extra_toks_per_seq=1)
+        data_loader = torch.utils.data.DataLoader(
+            dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
+        )
+        with torch.no_grad():
+            for batch_idx, (labels, strs, toks) in enumerate(data_loader):
+                print(
+                    f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
+                )
+                toks = toks.to(device="cuda", non_blocking=True)
+                out = esm_model(toks, repr_layers=[33], return_contacts=False)
+                representations = {
+                    layer: t.to(device="cpu") for layer, t in out["representations"].items()
+                }
+                for i, label in enumerate(labels):
+                    out = {
+                        layer: t[i, 1 : 1023].clone()
+                        for layer, t in representations.items()
+                    }
+                    new_esm_emb_2[label] = out[33]
+        for key in new_esm_emb_2:
+            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt"):
+                torch.save(new_esm_emb_2[key], args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt")
+
         esm_emb = []
+        new_esm_emb.update(new_esm_emb_2)
         for ec in list(ec_id_dict.keys()):
             ids_for_query = list(ec_id_dict[ec])
             esm_to_cat = [new_esm_emb[id].mean(0) for id in ids_for_query]
@@ -376,8 +399,9 @@ def main():
         dist_map = get_dist_map(
             ec_id_dict, esm_emb, device, dtype)
         os.makedirs(args.temp_esm_path + f"/epoch{start_epoch}", exist_ok=True)
-        for key in new_esm_emb:
-            torch.save(new_esm_emb[key], args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt")
+        for key in new_esm_emb_2:
+            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt"):
+                torch.save(new_esm_emb_2[key], args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt")
     print("The number of unique EC numbers: ", len(dist_map.keys()))
     
     #======================== training =======-=================#
