@@ -253,7 +253,7 @@ def main():
     args = parse()
     torch.backends.cudnn.benchmark = True
     id_ec, ec_id_dict = get_ec_id_dict('./data/' + args.training_data + '.csv')
-    ec_id = {key: list(ec_id_dict[key]) for key in ec_id_dict.keys()}
+    ec_id = {key_: list(ec_id_dict[key_]) for key_ in ec_id_dict.keys()}
     seq_dict = {rec.id : rec.seq for rec in SeqIO.parse(f'./data/{args.training_data}.fasta', "fasta")}
     seq_dict.update({rec.id : rec.seq for rec in SeqIO.parse(f'./data/{args.training_data}_single_seq_ECs.fasta', "fasta")})
 
@@ -315,11 +315,11 @@ def main():
         dict1 = SeqIO.to_dict(SeqIO.parse(file_1, "fasta"))
         dict2 = SeqIO.to_dict(SeqIO.parse(file_2, "fasta"))
 
-        for key in list(dict1.keys()):
-            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt"):
-                del dict1[key]
-                print(f"{key} founded!")
-                new_esm_emb[key] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt")
+        for key_ in list(dict1.keys()):
+            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
+                del dict1[key_]
+                print(f"{key_} founded!")
+                new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
         
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
             SeqIO.write(dict1.values(), handle, 'fasta')
@@ -348,16 +348,16 @@ def main():
                     new_esm_emb[label] = out[33]
         
         os.makedirs(args.temp_esm_path + f"/epoch{start_epoch}", exist_ok=True)
-        for key in new_esm_emb:
-            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt"):
-                torch.save(new_esm_emb[key], args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt")
+        for key_ in new_esm_emb:
+            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
+                torch.save(new_esm_emb[key_], args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
         
         new_esm_emb_2 = {}
-        for key in list(dict2.keys()):
-            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt"):
-                del dict2[key]
-                print(f"{key} founded!")
-                new_esm_emb_2[key] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt")
+        for key_ in list(dict2.keys()):
+            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
+                del dict2[key_]
+                print(f"{key_} founded!")
+                new_esm_emb_2[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
         
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
             SeqIO.write(dict2.values(), handle, 'fasta')
@@ -384,9 +384,9 @@ def main():
                         for layer, t in representations.items()
                     }
                     new_esm_emb_2[label] = out[33]
-        for key in new_esm_emb_2:
-            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt"):
-                torch.save(new_esm_emb_2[key], args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt")
+        for key_ in new_esm_emb_2:
+            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
+                torch.save(new_esm_emb_2[key_], args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
 
         esm_emb = []
         new_esm_emb.update(new_esm_emb_2)
@@ -399,9 +399,9 @@ def main():
         dist_map = get_dist_map(
             ec_id_dict, esm_emb, device, dtype)
         os.makedirs(args.temp_esm_path + f"/epoch{start_epoch}", exist_ok=True)
-        for key in new_esm_emb_2:
-            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt"):
-                torch.save(new_esm_emb_2[key], args.temp_esm_path + f"/epoch{start_epoch}/" + key + ".pt")
+        for key_ in new_esm_emb_2:
+            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
+                torch.save(new_esm_emb_2[key_], args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
     print("The number of unique EC numbers: ", len(dist_map.keys()))
     
     #======================== training =======-=================#
@@ -493,8 +493,8 @@ def main():
             dist_map = get_dist_map(
                 ec_id_dict, esm_emb, device, dtype, model=model)
 
-            for key in new_esm_emb:
-                torch.save(new_esm_emb[key], args.temp_esm_path + "/" + key + ".pt")
+            for key_ in new_esm_emb:
+                torch.save(new_esm_emb[key_], args.temp_esm_path + "/" + key_ + ".pt")
             del new_esm_emb
             train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path)
         # -------------------------------------------------------------------- #

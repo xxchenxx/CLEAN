@@ -43,14 +43,11 @@ class FastaBatchedDataset(object):
                     line = line[1:].strip()
                     if len(line) > 0:
                         cur_seq_label = line
-                        print(cur_seq_label)
-                        print(prev_line)
                     else:
                         cur_seq_label = f"seqnum{line_idx:09d}"
                 else:  # sequence line
                     buf.append(line.strip())
                 prev_line = line
-        print(sequence_labels)
         _flush_current_seq()
 
         assert len(set(sequence_labels)) == len(
