@@ -11,7 +11,7 @@ from CLEAN.distance_map import get_dist_map
 import torch
 from Bio import SeqIO
 import numpy as np
-
+from tqdm import tqdm
 from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
 
 
@@ -80,7 +80,7 @@ def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/
         'shuffle': True,
     }
     embed_params = {
-        'batch_size': 512,
+        'batch_size': 256,
         'shuffle': True,
         'collate_fn': custom_collate
     }
@@ -281,11 +281,11 @@ def main():
     batch_converter = alphabet.get_batch_converter()
     esm_model.eval()
     
-    esm_emb = pickle.load(
-        open('./data/distance_map/' + args.training_data + '_esm.pkl',
-                'rb')).to(device=device, dtype=dtype)
-    dist_map = pickle.load(open('./data/distance_map/' + \
-        args.training_data + '.pkl', 'rb')) 
+    # esm_emb = pickle.load(
+    #    open('./data/distance_map/' + args.training_data + '_esm.pkl',
+    #           'rb')).to(device=device, dtype=dtype)
+    #dist_map = pickle.load(open('./data/distance_map/' + \
+    #    args.training_data + '.pkl', 'rb')) 
     #======================== initialize model =================#
     model = LayerNormNet(args.hidden_dim, args.out_dim, device, dtype)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999))
@@ -305,7 +305,6 @@ def main():
         attentions_optimizer = None
     #======================== generate embed =================#
     start_epoch = 1
-    train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
 
     if True:
         new_esm_emb = {}
@@ -314,14 +313,15 @@ def main():
         file_2 = open('./data/' + args.training_data + '_single_seq_ECs.fasta')
         dict1 = SeqIO.to_dict(SeqIO.parse(file_1, "fasta"))
         dict2 = SeqIO.to_dict(SeqIO.parse(file_2, "fasta"))
-
+        original = len(list(dict1.keys()))
+        
         for key_ in list(dict1.keys()):
             if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
                 del dict1[key_]
-                print(f"{key_} founded!")
-
+                # print(f"{key_} founded!")
                 new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt").mean(0).detach().cpu()
-        
+        remain = len(dict1)
+        print(f"Need to parse {remain}/{original}")
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
             SeqIO.write(dict1.values(), handle, 'fasta')
 
@@ -348,15 +348,17 @@ def main():
                         for layer, t in representations.items()
                     }
                     torch.save(out[33], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
-                    new_esm_emb[label] = out[33].mean(0)
+                    new_esm_emb[label] = out[33].mean(0).cpu()
                     
-        
+        original = len(list(dict2.keys()))
         new_esm_emb_2 = {}
         for key_ in list(dict2.keys()):
             if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
                 del dict2[key_]
-                print(f"{key_} founded!")
                 new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt").mean(0)
+        
+        remain = len(dict2)
+        print(f"Need to parse {remain}/{original}")
 
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
             SeqIO.write(dict2.values(), handle, 'fasta')
@@ -401,6 +403,7 @@ def main():
             if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
                 torch.save(new_esm_emb_2[key_], args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
     print("The number of unique EC numbers: ", len(dist_map.keys()))
+    train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
     
     #======================== training =======-=================#
     # training

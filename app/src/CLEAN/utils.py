@@ -179,7 +179,7 @@ def mutate_single_seq_ECs(train_file):
     single_id = set()
     for id in id_ec.keys():
         for ec in id_ec[id]:
-            if ec in single_ec and not os.path.exists('./data/esm_data/' + id + '_1.pt'):
+            if ec in single_ec:
             # if ec in single_ec:
                 single_id.add(id)
                 break
