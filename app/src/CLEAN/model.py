@@ -170,7 +170,11 @@ class MoCo(nn.Module):
         assert self.K % batch_size == 0  # for simplicity
 
         # replace the keys at ptr (dequeue and enqueue)
-        self.queue[:, ptr : ptr + batch_size] = keys.T
+        if ptr + batch_size > self.queue.shape[1]:
+            self.queue[:, ptr : ptr + batch_size] = (keys.T)[:, :(self.queue.shape[1] - ptr)]
+            self.queue[:, :ptr + batch_size - self.queue.shape[1]] = (keys.T)[:, (self.queue.shape[1] - ptr):]
+        else:
+            self.queue[:, ptr : ptr + batch_size] = keys.T
         ptr = (ptr + batch_size) % self.K  # move pointer
 
         self.queue_ptr[0] = ptr

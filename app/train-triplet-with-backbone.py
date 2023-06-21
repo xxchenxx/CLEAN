@@ -76,11 +76,11 @@ def custom_collate(data): #(2)
 
 def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/"):
     train_params = {
-        'batch_size': 2,
+        'batch_size': 1,
         'shuffle': True,
     }
     embed_params = {
-        'batch_size': 256,
+        'batch_size': 128,
         'shuffle': True,
         'collate_fn': custom_collate
     }
@@ -399,9 +399,6 @@ def main():
         dist_map = get_dist_map(
             ec_id_dict, esm_emb, device, dtype)
         os.makedirs(args.temp_esm_path + f"/epoch{start_epoch}", exist_ok=True)
-        for key_ in new_esm_emb_2:
-            if not os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
-                torch.save(new_esm_emb_2[key_], args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt")
     print("The number of unique EC numbers: ", len(dist_map.keys()))
     train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
     
@@ -450,8 +447,15 @@ def main():
                             layer: t[i, 1 : 1023].clone()
                             for layer, t in representations.items()
                         }
+                        if not args.use_extra_attention:
+                            new_esm_emb[label] = out[33].mean(0)
+                        else:
+                            q = query(out[33].cuda())
+                            k = key(out[33].cuda())
+                            prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 0) # N x 1
+                            new_esm_emb[label] = (prob @ out[33].cuda()).mean(0)
+                        torch.save(out[33], args.temp_esm_path + "/" + label + ".pt")
 
-                        new_esm_emb[label] = out[33]
             dataset = FastaBatchedDataset.from_file(
                 './data/' + args.training_data + '_single_seq_ECs.fasta')
             batches = dataset.get_batch_indices(
@@ -474,28 +478,17 @@ def main():
                             layer: t[i, 1 : 1023].clone()
                             for layer, t in representations.items()
                         }
-                        new_esm_emb[label] = out[33]
+                        torch.save(out[33], args.temp_esm_path + "/" + label + ".pt")
+
             esm_emb = []
             # for ec in tqdm(list(ec_id_dict.keys())):
             for ec in list(ec_id_dict.keys()):
                 ids_for_query = list(ec_id_dict[ec])
-                if not args.use_extra_attention:
-                    esm_to_cat = [new_esm_emb[id].mean(0) for id in ids_for_query]
-                else:
-                    esm_to_cat = []
-                    with torch.no_grad():
-                        for id in ids_for_query:
-                            q = query(new_esm_emb[id].cuda())
-                            k = key(new_esm_emb[id].cuda())
-                            prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 0) # N x 1
-                            esm_to_cat.append((prob @ new_esm_emb[id].cuda()).mean(0).cuda())
+                esm_to_cat = [new_esm_emb[id] for id in ids_for_query]
                 esm_emb = esm_emb + esm_to_cat
             esm_emb = torch.stack(esm_emb).to(device=device, dtype=dtype)
             dist_map = get_dist_map(
                 ec_id_dict, esm_emb, device, dtype, model=model)
-
-            for key_ in new_esm_emb:
-                torch.save(new_esm_emb[key_], args.temp_esm_path + "/" + key_ + ".pt")
             del new_esm_emb
             train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path)
         # -------------------------------------------------------------------- #
@@ -507,7 +500,9 @@ def main():
         # only save the current best model near the end of training
         if (train_loss < best_loss and epoch > 0.8*epochs):
             torch.save(model.state_dict(), './data/model/' + model_name + '.pth')
-            torch.save(model.state_dict(), './data/model/esm_' + model_name + '.pth')
+            torch.save(esm_model.state_dict(), './data/model/esm_' + model_name + '.pth')
+            torch.save(query.state_dict(), './data/model/query_' + model_name + '.pth')
+            torch.save(key.state_dict(), './data/model/key_' + model_name + '.pth')
             best_loss = train_loss
             print(f'Best from epoch : {epoch:3d}; loss: {train_loss:6.4f}')
 
@@ -519,9 +514,20 @@ def main():
     # remove tmp save weights
     os.remove('./data/model/' + model_name + '.pth')
     os.remove('./data/model/' + model_name + '_' + str(epoch) + '.pth')
+
+    os.remove('./data/model/esm_' + model_name + '.pth')
+    os.remove('./data/model/esm_' + model_name + '_' + str(epoch) + '.pth')
+
+    os.remove('./data/model/query_' + model_name + '.pth')
+    os.remove('./data/model/query_' + model_name + '_' + str(epoch) + '.pth')
+
+    os.remove('./data/model/key_' + model_name + '.pth')
+    os.remove('./data/model/key_' + model_name + '_' + str(epoch) + '.pth')
     # save final weights
     torch.save(model.state_dict(), './data/model/' + model_name + '.pth')
-    torch.save(model.state_dict(), './data/model/esm_' + model_name + '.pth')
+    torch.save(esm_model.state_dict(), './data/model/esm_' + model_name + '.pth')
+    torch.save(query.state_dict(), './data/model/query_' + model_name + '.pth')
+    torch.save(key.state_dict(), './data/model/key_' + model_name + '.pth')
 
 if __name__ == '__main__':
     main()

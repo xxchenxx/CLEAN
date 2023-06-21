@@ -224,7 +224,9 @@ class MoCo_dataset_with_mine_EC(torch.utils.data.Dataset):
     def __getitem__(self, index):
         anchor_ec = self.full_list[index]
         anchor = random.choice(self.ec_id[anchor_ec])
-        pos = mine_positive(anchor, self.id_ec, self.ec_id, self.mine_pos)
+        # pos = mine_positive(anchor, self.id_ec, self.ec_id, self.mine_pos)
+        pos = random_positive(anchor, self.id_ec, self.ec_id)
+        # print('anchor:', anchor, 'pos:', pos)
         a = torch.load(f'{self.path}/' + anchor + '.pt')
         p = torch.load(f'{self.path}/' + pos + '.pt')
         return format_esm(a), format_esm(p)
