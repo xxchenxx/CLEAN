@@ -99,7 +99,7 @@ class InstanceNorm(nn.Module):
  
 
 class MoCoEncoder(nn.Module):
-    def __init__(self, hidden_dim, out_dim, device, dtype, drop_out=0.1):
+    def __init__(self, hidden_dim, out_dim, device, dtype, drop_out=0.1, esm_model_dim=1280):
         super(MoCoEncoder, self).__init__()
         self.hidden_dim1 = hidden_dim
         self.out_dim = out_dim
@@ -107,7 +107,7 @@ class MoCoEncoder(nn.Module):
         self.device = device
         self.dtype = dtype
 
-        self.fc1 = nn.Linear(1280, hidden_dim, dtype=dtype, device=device)
+        self.fc1 = nn.Linear(esm_model_dim, hidden_dim, dtype=dtype, device=device)
         self.ln1 = nn.LayerNorm(hidden_dim, dtype=dtype, device=device)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim,
                              dtype=dtype, device=device)
@@ -124,14 +124,14 @@ class MoCoEncoder(nn.Module):
         return x
 
 class MoCo(nn.Module):
-    def __init__(self, hidden_dim, out_dim, device, dtype, drop_out=0.1):
+    def __init__(self, hidden_dim, out_dim, device, dtype, drop_out=0.1, esm_model_dim=1280):
         super(MoCo, self).__init__()
-        self.K = 400
+        self.K = 1000
         self.m = 0.999
         self.T = 0.07
 
-        self.encoder_q = MoCoEncoder(hidden_dim, out_dim, device, dtype, drop_out=0.1)
-        self.encoder_k = MoCoEncoder(hidden_dim, out_dim, device, dtype, drop_out=0.1)
+        self.encoder_q = MoCoEncoder(hidden_dim, out_dim, device, dtype, drop_out=0.1, esm_model_dim=esm_model_dim)
+        self.encoder_k = MoCoEncoder(hidden_dim, out_dim, device, dtype, drop_out=0.1,esm_model_dim=esm_model_dim)
 
         for param_q, param_k in zip(
             self.encoder_q.parameters(), self.encoder_k.parameters()

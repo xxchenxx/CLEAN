@@ -44,7 +44,13 @@ def parse():
     parser.add_argument('--train_esm_rate', type=int, default=100)
     parser.add_argument('--verbose', type=bool, default=False)
     parser.add_argument('--use_extra_attention', action="store_true")
+    parser.add_argument('--use_top_k', action="store_true")
+    parser.add_argument('--use_top_k_sum', action="store_true")
     parser.add_argument('--temp_esm_path', type=str, required=True)
+    parser.add_argument('--evaluate_freq', type=int, default=50)
+    parser.add_argument('--esm-model', type=str, default='esm1b_t33_650M_UR50S.pt')
+    parser.add_argument('--esm-model-dim', type=int, default=1280)
+    parser.add_argument('--repr-layer', type=int, default=33)
     args = parser.parse_args()
     return args
 
@@ -79,7 +85,7 @@ def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/
         'shuffle': True,
     }
     embed_params = {
-        'batch_size': 200,
+        'batch_size': 100,
         'shuffle': True,
         'collate_fn': custom_collate
     }
@@ -109,9 +115,9 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             batch_labels, batch_strs, batch_tokens = batch_converter(anchor)
             batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
 
-            results = esm_model(batch_tokens.to(device), repr_layers=[33], return_contacts=True)
+            results = esm_model(batch_tokens.to(device), repr_layers=[args.repr_layer], return_contacts=True)
 
-            token_representations = results["representations"][33]
+            token_representations = results["representations"][args.repr_layer]
             anchor = []
             
             for i, tokens_len in enumerate(batch_lens):
@@ -120,15 +126,33 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                 else:
                     q = query(token_representations[i, 1 : tokens_len - 1]) # N x 64
                     k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
-                    prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 0) # N x 1
+                    if args.use_top_k:
+                        raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                        
+                        shape = raw.shape
+                        raw = raw.reshape(-1, raw.shape[-1])
+                        _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
+                        smallest = torch.zeros_like(raw)
+                        for i in range(len(raw)):
+                            smallest[i, smallest_value[i]] = 1
+                        smallest = smallest.reshape(shape).bool()
+                        raw = raw.reshape(shape)
+                        raw[smallest] = raw[smallest] + float('-inf')
+                        prob = torch.softmax(raw, -1) # N x 1
+                    elif args.use_top_k_sum:
+                        raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                        weights = raw.sum(-2, keepdim=True)
+                        prob = torch.softmax(weights, -1)
+                    else:
+                        prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 1) # N x 1
                     anchor.append((prob.transpose(0, 1) @ token_representations[i, 1 : tokens_len - 1]).mean(0))
             anchor = torch.stack(anchor)
             positive = [('', seq_dict[a]) for a in positive]
             batch_labels, batch_strs, batch_tokens = batch_converter(positive)
             batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
-            results = esm_model(batch_tokens.to(device), repr_layers=[33], return_contacts=True)
+            results = esm_model(batch_tokens.to(device), repr_layers=[args.repr_layer], return_contacts=True)
         
-            token_representations = results["representations"][33].cuda()
+            token_representations = results["representations"][args.repr_layer].cuda()
             positive = []
             for i, tokens_len in enumerate(batch_lens):
                 if query is None:
@@ -136,7 +160,25 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                 else:
                     q = query(token_representations[i, 1 : tokens_len - 1]) # N x 64
                     k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
-                    prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 0) # N x 1
+                    if args.use_top_k:
+                        raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                        
+                        shape = raw.shape
+                        raw = raw.reshape(-1, raw.shape[-1])
+                        _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
+                        smallest = torch.zeros_like(raw)
+                        for i in range(len(raw)):
+                            smallest[i, smallest_value[i]] = 1
+                        smallest = smallest.reshape(shape).bool()
+                        raw = raw.reshape(shape)
+                        raw[smallest] = raw[smallest] + float('-inf')
+                        prob = torch.softmax(raw, -1) # N x 1
+                    elif args.use_top_k_sum:
+                        raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                        weights = raw.sum(-2, keepdim=True)
+                        prob = torch.softmax(weights, -1)
+                    else:
+                        prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 1) # N x 1
                     positive.append((prob.transpose(0, 1) @ token_representations[i, 1 : tokens_len - 1]).mean(0))
             positive = torch.stack(positive)
             anchor_out, positive_out = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
@@ -180,19 +222,66 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             else:
                 q_positive = query(positive_original) # N x 64
                 k_positive = key(positive_original) # 1 x 64
-                prob = torch.softmax(torch.bmm(q_positive, k_positive.transpose(1, 2)) / np.sqrt(64) + positive_attn_mask, -1) 
 
+                if args.use_top_k:
+                    raw = torch.bmm(q_positive, k_positive.transpose(1, 2)) / np.sqrt(64) + positive_attn_mask
+                    
+                    shape = raw.shape
+                    raw = raw.reshape(-1, raw.shape[-1])
+                    _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
+                    smallest = torch.zeros_like(raw)
+                    for i in range(len(raw)):
+                        smallest[i, smallest_value[i]] = 1
+                    
+                    smallest = smallest.reshape(shape).bool()
+                    raw = raw.reshape(shape)
+                    raw[smallest] = raw[smallest] + float('-inf')
+                    prob = torch.softmax(raw, -1) # N x 1
+                elif args.use_top_k_sum:
+                    raw = torch.bmm(q_positive, k_positive.transpose(1, 2))
+                    weights = raw.sum(-2, keepdim=True)
+                    for i in range(len(weights)):
+                        weights[i,0][positive_avg_mask[i] == 0] = -float("inf")
+                    prob = torch.softmax(weights, -1)
+                    # positive_avg_mask is B x N
+                else:
+                    prob = torch.softmax(torch.bmm(q_positive, k_positive.transpose(1, 2)) / np.sqrt(64) + positive_attn_mask, -1) 
+                
                 positive_multiple = torch.bmm(prob, positive_original)
-                positive = torch.sum(positive_multiple * positive_avg_mask.unsqueeze(-1), 1)
-
+                if not args.use_top_k_sum:
+                    positive = torch.sum(positive_multiple * positive_avg_mask.unsqueeze(-1), 1) # proj matrix is NxN
+                else:
+                    # proj matrix is Bx1xN
+                    positive = positive_multiple.squeeze(-2)
+                    # avg mask
                 q_anchor = query(anchor_original) # N x 64
                 k_anchor = key(anchor_original) # 1 x 64
-                prob = torch.softmax(torch.bmm(q_anchor, k_anchor.transpose(1, 2)) / np.sqrt(64) + anchor_attn_mask, -1)  # N x 1
-
+                if args.use_top_k:
+                    raw = torch.bmm(q_anchor, k_anchor.transpose(1, 2)) / np.sqrt(64) + anchor_attn_mask
+                    
+                    shape = raw.shape
+                    raw = raw.reshape(-1, raw.shape[-1])
+                    _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
+                    smallest = torch.zeros_like(raw)
+                    for i in range(len(raw)):
+                        smallest[i, smallest_value[i]] = 1
+                    smallest = smallest.reshape(shape).bool()
+                    raw = raw.reshape(shape)
+                    raw[smallest] = raw[smallest] + float('-inf')
+                    prob = torch.softmax(raw, -1) # N x 1
+                elif args.use_top_k_sum:
+                    raw = torch.bmm(q_anchor, k_anchor.transpose(1, 2)) / np.sqrt(64)
+                    weights = raw.sum(-2, keepdim=True)
+                    for i in range(len(weights)):
+                        weights[i, 0][anchor_avg_mask[i] == 0] = -float("inf")
+                    prob = torch.softmax(weights, -1)
+                else:
+                    prob = torch.softmax(torch.bmm(q_anchor, k_anchor.transpose(1, 2)) / np.sqrt(64) + anchor_attn_mask, -1) 
                 anchor_multiple = torch.bmm(prob, anchor_original)
                 anchor = torch.sum(anchor_multiple * anchor_avg_mask.unsqueeze(-1), 1)
             output, target = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
             loss = criterion(output, target)
+            
             loss.backward()
             optimizer.step()
 
@@ -236,24 +325,24 @@ def main():
     
 
     esm_model, alphabet = pretrained.load_model_and_alphabet(
-        'esm1b_t33_650M_UR50S.pt')
+        args.esm_model)
     esm_model = esm_model.to(device)
 
     batch_converter = alphabet.get_batch_converter()
     esm_model.eval()
     
     #======================== initialize model =================#
-    model = MoCo(args.hidden_dim, args.out_dim, device, dtype)
+    model = MoCo(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim).cuda()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01, betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000, eta_min=0, last_epoch=-1, verbose=False)
-    esm_optimizer = torch.optim.Adam(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
+    esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
     criterion = nn.CrossEntropyLoss().to(device)    
     best_loss = float('inf')
 
     if args.use_extra_attention:
-        query = nn.Linear(1280, 64, bias=False).to(device)
+        query = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
         nn.init.zeros_(query.weight)
-        key = nn.Linear(1280, 64, bias=False).to(device)
+        key = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
         nn.init.zeros_(key.weight)
         attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": lr, "momentum": 0.9}])
         attentions = [query, key]
@@ -295,7 +384,7 @@ def main():
                     f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
                 )
                 toks = toks.to(device="cuda", non_blocking=True)
-                out = esm_model(toks, repr_layers=[33], return_contacts=False)
+                out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
                 representations = {
                     layer: t.to(device="cpu") for layer, t in out["representations"].items()
                 }
@@ -304,8 +393,8 @@ def main():
                         layer: t[i, 1 : 1023].clone()
                         for layer, t in representations.items()
                     }
-                    torch.save(out[33], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
-                    new_esm_emb[label] = out[33].mean(0).cpu()
+                    torch.save(out[args.repr_layer], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
+                    new_esm_emb[label] = out[args.repr_layer].mean(0).cpu()
                     
         original = len(list(dict2.keys()))
         new_esm_emb_2 = {}
@@ -332,7 +421,7 @@ def main():
                     f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
                 )
                 toks = toks.to(device="cuda", non_blocking=True)
-                out = esm_model(toks, repr_layers=[33], return_contacts=False)
+                out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
                 representations = {
                     layer: t.to(device="cpu") for layer, t in out["representations"].items()
                 }
@@ -342,8 +431,8 @@ def main():
                         for layer, t in representations.items()
                     }
 
-                    torch.save(out[33], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
-                    # new_esm_emb_2[label] = out[33].mean(0)
+                    torch.save(out[args.repr_layer], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
+                    # new_esm_emb_2[label] = out[args.repr_layer].mean(0)
 
         esm_emb = []
         new_esm_emb.update(new_esm_emb_2)
@@ -399,7 +488,7 @@ def main():
                             f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
                         )
                         toks = toks.to(device="cuda", non_blocking=True)
-                        out = esm_model(toks, repr_layers=[33], return_contacts=False)
+                        out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
                         representations = {
                             layer: t.to(device="cpu") for layer, t in out["representations"].items()
                         }
@@ -410,13 +499,27 @@ def main():
                                 for layer, t in representations.items()
                             }
                             if not args.use_extra_attention:
-                                new_esm_emb[label] = out[33].mean(0)
+                                new_esm_emb[label] = out[args.repr_layer].mean(0)
                             else:
-                                q = query(out[33].cuda())
-                                k = key(out[33].cuda())
-                                prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 0) # N x 1
-                                new_esm_emb[label] = (prob @ out[33].cuda()).mean(0)
-                            torch.save(out[33], args.temp_esm_path + "/" + label + ".pt")
+                                q = query(out[args.repr_layer].cuda())
+                                k = key(out[args.repr_layer].cuda())
+                                if args.use_top_k:
+                                    raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                                    
+                                    shape = raw.shape
+                                    raw = raw.reshape(-1, raw.shape[-1])
+                                    _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
+                                    smallest = torch.zeros_like(raw)
+                                    for i in range(len(raw)):
+                                        smallest[i, smallest_value[i]] = 1
+                                    smallest = smallest.reshape(shape).bool()
+                                    raw = raw.reshape(shape)
+                                    raw[smallest] = raw[smallest] + float('-inf')
+                                    prob = torch.softmax(raw, -1) # N x 1
+                                else:
+                                    prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 1) # N x 1
+                                new_esm_emb[label] = (prob @ out[args.repr_layer].cuda()).mean(0)
+                            torch.save(out[args.repr_layer], args.temp_esm_path + "/" + label + ".pt")
 
                 dataset = FastaBatchedDataset.from_file(
                     './data/' + args.training_data + '_single_seq_ECs.fasta')
@@ -431,7 +534,7 @@ def main():
                             f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
                         )
                         toks = toks.to(device="cuda", non_blocking=True)
-                        out = esm_model(toks, repr_layers=[33], return_contacts=False)
+                        out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
                         representations = {
                             layer: t.to(device="cpu") for layer, t in out["representations"].items()
                         }
@@ -440,8 +543,10 @@ def main():
                                 layer: t[i, 1 : 1023].clone()
                                 for layer, t in representations.items()
                             }
-                            torch.save(out[33], args.temp_esm_path + "/" + label + ".pt")
+                            torch.save(out[args.repr_layer], args.temp_esm_path + "/" + label + ".pt")
+                train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path)
 
+        if epoch % args.evaluate_freq == 0:
             train_esm_emb = []
                 # for ec in tqdm(list(ec_id_dict.keys())):
             for ec in list(ec_id_dict.keys()):
@@ -464,7 +569,7 @@ def main():
                         f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
                     )
                     toks = toks.to(device="cuda", non_blocking=True)
-                    out = esm_model(toks, repr_layers=[33], return_contacts=False)
+                    out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
                     representations = {
                         layer: t.to(device="cpu") for layer, t in out["representations"].items()
                     }
@@ -474,12 +579,26 @@ def main():
                             for layer, t in representations.items()
                         }
                         if not args.use_extra_attention:
-                            test_emb[label] = out[33].mean(0)
+                            test_emb[label] = out[args.repr_layer].cuda().mean(0)
                         else:
-                            q = query(out[33].cuda())
-                            k = key(out[33].cuda())
-                            prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 0) # N x 1
-                            test_emb[label] = (prob @ out[33].cuda()).mean(0)
+                            q = query(out[args.repr_layer].cuda())
+                            k = key(out[args.repr_layer].cuda())
+                            if args.use_top_k:
+                                raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                                
+                                shape = raw.shape
+                                raw = raw.reshape(-1, raw.shape[-1])
+                                _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
+                                smallest = torch.zeros_like(raw)
+                                for i in range(len(raw)):
+                                    smallest[i, smallest_value[i]] = 1
+                                smallest = smallest.reshape(shape).bool()
+                                raw = raw.reshape(shape)
+                                raw[smallest] = raw[smallest] + float('-inf')
+                                prob = torch.softmax(raw, -1) # N x 1
+                            else:
+                                prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 1) # N x 1
+                            test_emb[label] = (prob @ out[args.repr_layer].cuda()).mean(0)
             test_esm_emb = []
             id_ec_test, ec_id_dict_test = get_ec_id_dict('./data/price.csv')
             ids_for_query = list(id_ec_test.keys())
@@ -505,7 +624,7 @@ def main():
                     f'>>> precision: {pre:.3} | recall: {rec:.3}'
                     f'| F1: {f1:.3} | AUC: {roc:.3} ')
                 print('-' * 75)
-            train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path)
+
         # -------------------------------------------------------------------- #
         epoch_start_time = time.time()
         train_loss = train(model, args, epoch, train_loader, static_embed_loader,
@@ -517,15 +636,17 @@ def main():
         if (train_loss < best_loss):
             torch.save(model.state_dict(), './data/model/moco_best_' + model_name + '.pth')
             torch.save(esm_model.state_dict(), './data/model/moco_esm_best_' + model_name + '.pth')
-            torch.save(query.state_dict(), './data/model/moco_query_best_' + model_name + '.pth')
-            torch.save(key.state_dict(), './data/model/moco_key_best_' + model_name + '.pth')
+            if args.use_extra_attention:
+                torch.save(query.state_dict(), './data/model/moco_query_best_' + model_name + '.pth')
+                torch.save(key.state_dict(), './data/model/moco_key_best_' + model_name + '.pth')
             best_loss = train_loss
             print(f'Best from epoch : {epoch:3d}; loss: {train_loss:6.4f}')
         elif epoch % 100 == 0:
             torch.save(model.state_dict(), './data/model/moco_' + model_name + '.pth')
             torch.save(esm_model.state_dict(), './data/model/moco_esm_' + model_name + '.pth')
-            torch.save(query.state_dict(), './data/model/moco_query_' + model_name + '.pth')
-            torch.save(key.state_dict(), './data/model/moco_key_' + model_name + '.pth')
+            if args.use_extra_attention:
+                torch.save(query.state_dict(), './data/model/moco_query_' + model_name + '.pth')
+                torch.save(key.state_dict(), './data/model/moco_key_' + model_name + '.pth')
         elapsed = time.time() - epoch_start_time
         print('-' * 75)
         print(f'| end of epoch {epoch:3d} | time: {elapsed:5.2f}s | '
@@ -538,16 +659,18 @@ def main():
     os.remove('./data/model/moco_esm_' + model_name + '.pth')
     os.remove('./data/model/moco_esm_' + model_name + '_' + str(epoch) + '.pth')
 
-    os.remove('./data/model/moco_query_' + model_name + '.pth')
-    os.remove('./data/model/moco_query_' + model_name + '_' + str(epoch) + '.pth')
+    if args.use_extra_attention:
+        os.remove('./data/model/moco_query_' + model_name + '.pth')
+        os.remove('./data/model/moco_query_' + model_name + '_' + str(epoch) + '.pth')
 
-    os.remove('./data/model/moco_key_' + model_name + '.pth')
-    os.remove('./data/model/moco_key_' + model_name + '_' + str(epoch) + '.pth')
+        os.remove('./data/model/moco_key_' + model_name + '.pth')
+        os.remove('./data/model/moco_key_' + model_name + '_' + str(epoch) + '.pth')
     # save final weights
     torch.save(model.state_dict(), './data/model/moco_' + model_name + '.pth')
     torch.save(esm_model.state_dict(), './data/model/moco_esm_' + model_name + '.pth')
-    torch.save(query.state_dict(), './data/model/moco_query_' + model_name + '.pth')
-    torch.save(key.state_dict(), './data/model/moco_key_' + model_name + '.pth')
+    if args.use_extra_attention:
+        torch.save(query.state_dict(), './data/model/moco_query_' + model_name + '.pth')
+        torch.save(key.state_dict(), './data/model/moco_key_' + model_name + '.pth')
 
 
 if __name__ == '__main__':
