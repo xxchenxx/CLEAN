@@ -57,9 +57,9 @@ def generate_from_file(file, alphabet, esm_model, args, start_epoch=1, save=True
                         layer: t[i, 1 : truncate_len].clone()
                         for layer, t in representations.items()
                     }
-                    
+                    # print(out[args.repr_layer].shape)
                     if save:
-                        torch.save(out[args.repr_layer], args.temp_esm_path + label + ".pt")
+                        torch.save(out[args.repr_layer].mean(0).cpu(), args.temp_esm_path + label + ".pt")
                     new_esm_emb[label] = out[args.repr_layer].mean(0).cpu()
     return new_esm_emb
 
@@ -163,9 +163,6 @@ def main():
         for key_ in list(dict1.keys()):
             if os.path.exists(args.temp_esm_path + key_ + ".pt"):
                 del dict1[key_]
-                # print(f"{key_} founded!")
-                # print(key_)
-                # new_esm_emb[key_] = torch.load(args.temp_esm_path + key_ + ".pt").mean(0).detach().cpu()
         remain = len(dict1)
         print(f"Need to parse {remain}/{original}")
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
@@ -173,7 +170,22 @@ def main():
         
         new_esm_emb_created = generate_from_file(f'temp_{args.training_data}.fasta', alphabet, esm_model, args, start_epoch, save=True)
         new_esm_emb.update(new_esm_emb_created)
-    
+        
+
+        file_1 = open('./data/' + args.training_data + '_single_seq_ECs.fasta')
+        dict1 = SeqIO.to_dict(SeqIO.parse(file_1, "fasta"))
+        original = len(list(dict1.keys()))
+        
+        for key_ in list(dict1.keys()):
+            if os.path.exists(args.temp_esm_path + key_ + ".pt"):
+                del dict1[key_]
+        remain = len(dict1)
+        print(f"Need to parse {remain}/{original}")
+        with open(f'temp_{args.training_data}.fasta', 'w') as handle:
+            SeqIO.write(dict1.values(), handle, 'fasta')
+        
+        new_esm_emb_created = generate_from_file(f'temp_{args.training_data}.fasta', alphabet, esm_model, args, start_epoch, save=True)
+        new_esm_emb.update(new_esm_emb_created)
         # esm_emb = []
         # for ec in list(ec_id_dict.keys()):
         #     ids_for_query = list(ec_id_dict[ec])

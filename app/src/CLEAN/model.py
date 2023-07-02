@@ -20,7 +20,7 @@ class VanillaNet(nn.Module):
 
 
 class LayerNormNet(nn.Module):
-    def __init__(self, hidden_dim, out_dim, device, dtype, drop_out=0.1):
+    def __init__(self, hidden_dim, out_dim, device, dtype, drop_out=0.1, esm_model_dim=1280):
         super(LayerNormNet, self).__init__()
         self.hidden_dim1 = hidden_dim
         self.out_dim = out_dim
@@ -28,7 +28,7 @@ class LayerNormNet(nn.Module):
         self.device = device
         self.dtype = dtype
 
-        self.fc1 = nn.Linear(1280, hidden_dim, dtype=dtype, device=device)
+        self.fc1 = nn.Linear(esm_model_dim, hidden_dim, dtype=dtype, device=device)
         self.ln1 = nn.LayerNorm(hidden_dim, dtype=dtype, device=device)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim,
                              dtype=dtype, device=device)
