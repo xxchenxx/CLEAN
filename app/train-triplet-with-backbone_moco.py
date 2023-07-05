@@ -56,7 +56,7 @@ def generate_from_file(file, alphabet, esm_model, args, start_epoch=1):
                         layer: t[i, 1 : 1023].clone()
                         for layer, t in representations.items()
                     }
-                    torch.save(out[args.repr_layer], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
+                    torch.save(out[args.repr_layer], args.temp_esm_path + label + ".pt")
                     new_esm_emb[label] = out[args.repr_layer].mean(0).cpu()
     return new_esm_emb
 
@@ -421,10 +421,10 @@ def main():
         original = len(list(dict1.keys()))
         
         for key_ in list(dict1.keys()):
-            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
+            if os.path.exists(args.temp_esm_path + key_ + ".pt"):
                 del dict1[key_]
                 # print(f"{key_} founded!")
-                new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt").mean(0).detach().cpu()
+                new_esm_emb[key_] = torch.load(args.temp_esm_path + key_ + ".pt").mean(0).detach().cpu()
         remain = len(dict1)
         print(f"Need to parse {remain}/{original}")
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
@@ -434,7 +434,7 @@ def main():
         new_esm_emb.update(new_esm_emb_created)
         original = len(list(dict2.keys()))
         for key_ in list(dict2.keys()):
-            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
+            if os.path.exists(args.temp_esm_path + key_ + ".pt"):
                 del dict2[key_]
         
         remain = len(dict2)

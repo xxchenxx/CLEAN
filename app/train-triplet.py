@@ -18,19 +18,22 @@ def parse():
     parser.add_argument('-t', '--training_data', type=str, default='split10')
     parser.add_argument('-d', '--hidden_dim', type=int, default=512)
     parser.add_argument('-o', '--out_dim', type=int, default=128)
+    parser.add_argument('--esm_model_dim', type=int, default=1280)
     parser.add_argument('--adaptive_rate', type=int, default=100)
     parser.add_argument('--verbose', type=bool, default=False)
+    parser.add_argument('--esm_path', type=str, default='./data/esm_data')
+    parser.add_argument('--distance_path', type=str, default='./data/distance_map/')
     args = parser.parse_args()
     return args
 
 
-def get_dataloader(dist_map, id_ec, ec_id, args):
+def get_dataloader(dist_map, id_ec, ec_id, args, esm_path='./data/esm_data'):
     params = {
         'batch_size': 6000,
         'shuffle': True,
     }
     negative = mine_hard_negative(dist_map, 30)
-    train_data = Triplet_dataset_with_mine_EC(id_ec, ec_id, negative)
+    train_data = Triplet_dataset_with_mine_EC(id_ec, ec_id, negative, path=esm_path)
     train_loader = torch.utils.data.DataLoader(train_data, **params)
     return train_loader
 
@@ -44,6 +47,7 @@ def train(model, args, epoch, train_loader,
     for batch, data in enumerate(train_loader):
         optimizer.zero_grad()
         anchor, positive, negative = data
+
         anchor_out = model(anchor.to(device=device, dtype=dtype))
         positive_out = model(positive.to(device=device, dtype=dtype))
         negative_out = model(negative.to(device=device, dtype=dtype))
@@ -84,16 +88,16 @@ def main():
     # loading ESM embedding for dist map
  
     esm_emb = pickle.load(
-        open('./data/distance_map/' + args.training_data + '_esm.pkl',
+        open(args.distance_path + args.training_data + '_esm.pkl',
                 'rb')).to(device=device, dtype=dtype)
-    dist_map = pickle.load(open('./data/distance_map/' + \
+    dist_map = pickle.load(open(args.distance_path + \
         args.training_data + '.pkl', 'rb')) 
     #======================== initialize model =================#
-    model = LayerNormNet(args.hidden_dim, args.out_dim, device, dtype)
+    model = LayerNormNet(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999))
     criterion = nn.TripletMarginLoss(margin=1, reduction='mean')
     best_loss = float('inf')
-    train_loader = get_dataloader(dist_map, id_ec, ec_id, args)
+    train_loader = get_dataloader(dist_map, id_ec, ec_id, args, esm_path=args.esm_path)
     print("The number of unique EC numbers: ", len(dist_map.keys()))
     #======================== training =======-=================#
     # training
@@ -111,7 +115,11 @@ def main():
             # sample new distance map
             dist_map = get_dist_map(
                 ec_id_dict, esm_emb, device, dtype, model=model)
-            train_loader = get_dataloader(dist_map, id_ec, ec_id, args)
+            train_loader = get_dataloader(dist_map, id_ec, ec_id, args, esm_path=args.esm_path)
+
+        if epoch % 50 == 0:
+            torch.save(model.state_dict(), './data/model/' +
+                       model_name + '_' + str(epoch) + '_bak.pth')
         # -------------------------------------------------------------------- #
         epoch_start_time = time.time()
         train_loss = train(model, args, epoch, train_loader,

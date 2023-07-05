@@ -60,12 +60,12 @@ def format_esm(a):
     return a
 
 
-def load_esm(lookup):
-    esm = format_esm(torch.load('./data/esm_data/' + lookup + '.pt'))
+def load_esm(lookup, esm_path='data/esm_data'):
+    esm = format_esm(torch.load(f'./{esm_path}/' + lookup + '.pt'))
     return esm.unsqueeze(0)
 
 
-def esm_embedding(ec_id_dict, device, dtype):
+def esm_embedding(ec_id_dict, device, dtype, esm_path='esm_path'):
     '''
     Loading esm embedding in the sequence of EC numbers
     prepare for calculating cluster center by EC
@@ -74,7 +74,7 @@ def esm_embedding(ec_id_dict, device, dtype):
     # for ec in tqdm(list(ec_id_dict.keys())):
     for ec in list(ec_id_dict.keys()):
         ids_for_query = list(ec_id_dict[ec])
-        esm_to_cat = [load_esm(id) for id in ids_for_query]
+        esm_to_cat = [load_esm(id, esm_path=esm_path) for id in ids_for_query]
         esm_emb = esm_emb + esm_to_cat
     return torch.cat(esm_emb).to(device=device, dtype=dtype)
 
@@ -114,25 +114,25 @@ def ensure_dirs(path):
     if not os.path.exists(path):
         os.makedirs(path)
         
-def retrive_esm1b_embedding(fasta_name):
+def retrive_esm1b_embedding(fasta_name, esm_path='esm_data'):
     esm_script = "esm_source/scripts/extract.py"
-    esm_out = "data/esm_data"
-    esm_type = "esm1b_t33_650M_UR50S.pt"
+    esm_out = f"data/{esm_path}"
+    esm_type = "esm2_t12_35M_UR50D.pt"
     fasta_name = "data/" + fasta_name + ".fasta"
     command = ["python", esm_script, esm_type, 
               fasta_name, esm_out, "--include", "mean"]
     subprocess.run(command)
  
-def compute_esm_distance(train_file):
-    ensure_dirs('./data/distance_map/')
+def compute_esm_distance(train_file, esm_path='esm_data', distance_path='./data/distance_map/'):
+    ensure_dirs(f'{distance_path}')
     _, ec_id_dict = get_ec_id_dict('./data/' + train_file + '.csv')
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda:0" if use_cuda else "cpu")
     dtype = torch.float32
-    esm_emb = esm_embedding(ec_id_dict, device, dtype)
+    esm_emb = esm_embedding(ec_id_dict, device, dtype, esm_path=esm_path)
     esm_dist = get_dist_map(ec_id_dict, esm_emb, device, dtype)
-    pickle.dump(esm_dist, open('./data/distance_map/' + train_file + '.pkl', 'wb'))
-    pickle.dump(esm_emb, open('./data/distance_map/' + train_file + '_esm.pkl', 'wb'))
+    pickle.dump(esm_dist, open(f'{distance_path}' + train_file + '.pkl', 'wb'))
+    pickle.dump(esm_emb, open(f'{distance_path}' + train_file + '_esm.pkl', 'wb'))
     
 def prepare_infer_fasta(fasta_name):
     retrive_esm1b_embedding(fasta_name)
