@@ -111,7 +111,7 @@ def custom_collate(data): #(2)
 
 def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/"):
     train_params = {
-        'batch_size': 1,
+        'batch_size': 4,
         'shuffle': True,
     }
     embed_params = {
@@ -347,11 +347,12 @@ def main():
                        model_name + '_' + str(epoch) + '.pth')
             # delete last model checkpoint
             if epoch != args.adaptive_rate:
-                os.remove('./data/model/' + model_name + '_' +
-                          str(epoch-args.adaptive_rate) + '.pth')
-                os.remove('./data/model/esm_' + model_name + '_' +
-                          str(epoch-args.adaptive_rate) + '.pth')
-
+                # os.remove('./data/model/' + model_name + '_' +
+                #           str(epoch-args.adaptive_rate) + '.pth')
+                # os.remove('./data/model/esm_' + model_name + '_' +
+                #           str(epoch-args.adaptive_rate) + '.pth')
+                pass
+            
         if epoch % args.evaluate_freq == 0:
             dataset = FastaBatchedDataset.from_file(
                     './data/' + args.training_data + '.fasta')
