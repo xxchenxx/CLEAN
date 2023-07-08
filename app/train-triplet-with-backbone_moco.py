@@ -56,7 +56,7 @@ def generate_from_file(file, alphabet, esm_model, args, start_epoch=1):
                         layer: t[i, 1 : 1023].clone()
                         for layer, t in representations.items()
                     }
-                    torch.save(out[args.repr_layer], args.temp_esm_path + label + ".pt")
+                    torch.save(out[args.repr_layer], args.temp_esm_path + f"/epoch{start_epoch}" + label + ".pt")
                     new_esm_emb[label] = out[args.repr_layer].mean(0).cpu()
     return new_esm_emb
 
@@ -75,6 +75,7 @@ def parse():
     parser.add_argument('--use_top_k', action="store_true")
     parser.add_argument('--use_top_k_sum', action="store_true")
     parser.add_argument('--use_learnable_k', action="store_true")
+    parser.add_argument('--use_input_as_k', action="store_true")
     parser.add_argument('--temp_esm_path', type=str, required=True)
     parser.add_argument('--evaluate_freq', type=int, default=50)
     parser.add_argument('--esm-model', type=str, default='esm1b_t33_650M_UR50S.pt')
@@ -157,27 +158,29 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     q = query(token_representations[i, 1 : tokens_len - 1]) # N x 64
                     if learnable_k is None:
                         k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
+                    elif args.use_input_as_k:
+                        k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(keepdim=True))
                     else:
                         k = key(learnable_k) # 1 x 64
                     if args.use_top_k:
-                        raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                        raw = k @ q.transpose(0, 1) / np.sqrt(64)
                         
                         shape = raw.shape
                         raw = raw.reshape(-1, raw.shape[-1])
                         _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
                         smallest = torch.zeros_like(raw)
-                        for i in range(len(raw)):
-                            smallest[i, smallest_value[i]] = 1
+                        for j in range(len(raw)):
+                            smallest[j, smallest_value[j]] = 1
                         smallest = smallest.reshape(shape).bool()
                         raw = raw.reshape(shape)
                         raw[smallest] = raw[smallest] + float('-inf')
                         prob = torch.softmax(raw, -1) # N x 1
                     elif args.use_top_k_sum:
-                        raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                        raw = k @ q.transpose(0, 1) / np.sqrt(64)
                         weights = raw.sum(-2, keepdim=True)
                         prob = torch.softmax(weights, -1)
                     else:
-                        prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 1) # N x 1
+                        prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
                     anchor.append((prob.transpose(0, 1) @ token_representations[i, 1 : tokens_len - 1]).mean(0))
             anchor = torch.stack(anchor)
             positive = [('', seq_dict[a]) for a in positive]
@@ -194,27 +197,29 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     q = query(token_representations[i, 1 : tokens_len - 1]) # N x 64
                     if learnable_k is None:
                         k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
+                    elif args.use_input_as_k:
+                        k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(keepdim=True))
                     else:
                         k = key(learnable_k) # 1 x 64
                     if args.use_top_k:
-                        raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                        raw = k @ q.transpose(0, 1) / np.sqrt(64)
                         
                         shape = raw.shape
                         raw = raw.reshape(-1, raw.shape[-1])
                         _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
                         smallest = torch.zeros_like(raw)
-                        for i in range(len(raw)):
-                            smallest[i, smallest_value[i]] = 1
+                        for j in range(len(raw)):
+                            smallest[j, smallest_value[j]] = 1
                         smallest = smallest.reshape(shape).bool()
                         raw = raw.reshape(shape)
                         raw[smallest] = raw[smallest] + float('-inf')
                         prob = torch.softmax(raw, -1) # N x 1
                     elif args.use_top_k_sum:
-                        raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                        raw = k @ q.transpose(0, 1) / np.sqrt(64)
                         weights = raw.sum(-2, keepdim=True)
                         prob = torch.softmax(weights, -1)
                     else:
-                        prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 1) # N x 1
+                        prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
                     positive.append((prob.transpose(0, 1) @ token_representations[i, 1 : tokens_len - 1]).mean(0))
             positive = torch.stack(positive)
             anchor_out, positive_out = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
@@ -259,8 +264,10 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                 q_positive = query(positive_original) # N x 64
                 if learnable_k is not None:
                     k_positive = key(learnable_k)
+                elif args.use_input_as_k:
+                    k_positive = key(positive_original.mean(1, keepdim=True))
                 else:
-                    k_positive = key(positive_original) # 1 x 64
+                    k_positive = key(positive_original).unsqueeze(0).repeat(q_positive.shape[0], 1, 1) # 1 x 64
 
                 if args.use_top_k:
                     raw = torch.bmm(q_positive, k_positive.transpose(1, 2)) / np.sqrt(64) + positive_attn_mask
@@ -269,8 +276,8 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     raw = raw.reshape(-1, raw.shape[-1])
                     _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
                     smallest = torch.zeros_like(raw)
-                    for i in range(len(raw)):
-                        smallest[i, smallest_value[i]] = 1
+                    for j in range(len(raw)):
+                        smallest[j, smallest_value[j]] = 1
                     
                     smallest = smallest.reshape(shape).bool()
                     raw = raw.reshape(shape)
@@ -298,8 +305,10 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                 q_anchor = query(anchor_original) # N x 64
                 if learnable_k is not None:
                     k_anchor = key(learnable_k)
+                elif args.use_input_as_k:
+                    k_anchor = key(anchor_original.mean(1, keepdim=True))
                 else:
-                    k_anchor = key(anchor_original) # 1 x 64
+                    k_anchor = key(anchor_original).unsqueeze(0).repeat(q_positive.shape[0], 1, 1) # 1 x 64
                 if args.use_top_k:
                     raw = torch.bmm(q_anchor, k_anchor.transpose(1, 2)) / np.sqrt(64) + anchor_attn_mask
                     
@@ -307,8 +316,8 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     raw = raw.reshape(-1, raw.shape[-1])
                     _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
                     smallest = torch.zeros_like(raw)
-                    for i in range(len(raw)):
-                        smallest[i, smallest_value[i]] = 1
+                    for j in range(len(raw)):
+                        smallest[j, smallest_value[j]] = 1
                     smallest = smallest.reshape(shape).bool()
                     raw = raw.reshape(shape)
                     raw[smallest] = raw[smallest] + float('-inf')
@@ -389,7 +398,7 @@ def main():
     best_loss = float('inf')
 
     if args.use_learnable_k:
-        learnable_k = nn.Parameter(torch.zeros(1, args.esm_model_dim))
+        learnable_k = nn.Parameter(torch.zeros(1, args.esm_model_dim).cuda())
     else:
         learnable_k = None
 
@@ -507,27 +516,29 @@ def main():
                                 q = query(out[args.repr_layer].cuda())
                                 if learnable_k is None:
                                     k = key(out[args.repr_layer].cuda())
+                                elif args.use_input_as_k:
+                                    k = key(out[args.repr_layer].cuda().mean(keepdim=True))
                                 else:
                                     k = key(learnable_k)
                                 if args.use_top_k:
-                                    raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                                    raw = k @ q.transpose(0, 1) / np.sqrt(64)
                                     
                                     shape = raw.shape
                                     raw = raw.reshape(-1, raw.shape[-1])
                                     _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
                                     smallest = torch.zeros_like(raw)
-                                    for i in range(len(raw)):
-                                        smallest[i, smallest_value[i]] = 1
+                                    for j in range(len(raw)):
+                                        smallest[j, smallest_value[j]] = 1
                                     smallest = smallest.reshape(shape).bool()
                                     raw = raw.reshape(shape)
                                     raw[smallest] = raw[smallest] + float('-inf')
                                     prob = torch.softmax(raw, -1) # N x 1
                                 elif args.use_top_k_sum:
-                                    raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                                    raw = k @ q.transpose(0, 1) / np.sqrt(64)
                                     weights = raw.sum(-2, keepdim=True)
                                     prob = torch.softmax(weights, -1)
                                 else:
-                                    prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 1) # N x 1
+                                    prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
                                 new_esm_emb[label] = (prob @ out[args.repr_layer].cuda()).mean(0)
                             if args.train_esm_rate > 1:
                                 torch.save(out[args.repr_layer], args.temp_esm_path + "/" + label + ".pt")
@@ -558,7 +569,7 @@ def main():
                                 torch.save(out[args.repr_layer], args.temp_esm_path + "/" + label + ".pt")
                 train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path)
 
-        if epoch % args.evaluate_freq == 0:
+        if epoch % 50 == 0:
             train_esm_emb = []
                 # for ec in tqdm(list(ec_id_dict.keys())):
             for ec in list(ec_id_dict.keys()):
@@ -596,27 +607,30 @@ def main():
                             q = query(out[args.repr_layer].cuda())
                             if learnable_k is None:
                                 k = key(out[args.repr_layer].cuda())
+                            elif args.use_input_as_k:
+                                k = key(out[args.repr_layer].cuda().mean(keepdim=True))
                             else:
                                 k = key(learnable_k)
                             if args.use_top_k:
-                                raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                                raw = k @ q.transpose(0, 1) / np.sqrt(64)
                                 
                                 shape = raw.shape
                                 raw = raw.reshape(-1, raw.shape[-1])
                                 _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
                                 smallest = torch.zeros_like(raw)
-                                for i in range(len(raw)):
-                                    smallest[i, smallest_value[i]] = 1
+                                for j in range(len(raw)):
+                                    smallest[j, smallest_value[j]] = 1
                                 smallest = smallest.reshape(shape).bool()
                                 raw = raw.reshape(shape)
                                 raw[smallest] = raw[smallest] + float('-inf')
                                 prob = torch.softmax(raw, -1) # N x 1
                             elif args.use_top_k_sum:
-                                raw = q @ k.transpose(0, 1) / np.sqrt(64)
+                                raw = k @ q.transpose(0, 1) / np.sqrt(64)
                                 weights = raw.sum(-2, keepdim=True)
                                 prob = torch.softmax(weights, -1)
                             else:
-                                prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 1) # N x 1
+                                prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
+
                             test_emb[label] = (prob @ out[args.repr_layer].cuda()).mean(0)
             test_esm_emb = []
             id_ec_test, ec_id_dict_test = get_ec_id_dict('./data/price.csv')
