@@ -181,7 +181,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                         prob = torch.softmax(weights, -1)
                     else:
                         prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
-                    anchor.append((prob.transpose(0, 1) @ token_representations[i, 1 : tokens_len - 1]).mean(0))
+                    anchor.append((prob @ token_representations[i, 1 : tokens_len - 1]).mean(0))
             anchor = torch.stack(anchor)
             positive = [('', seq_dict[a]) for a in positive]
             batch_labels, batch_strs, batch_tokens = batch_converter(positive)
@@ -220,7 +220,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                         prob = torch.softmax(weights, -1)
                     else:
                         prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
-                    positive.append((prob.transpose(0, 1) @ token_representations[i, 1 : tokens_len - 1]).mean(0))
+                    positive.append((prob @ token_representations[i, 1 : tokens_len - 1]).mean(0))
             positive = torch.stack(positive)
             anchor_out, positive_out = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
             loss = criterion(anchor_out, positive_out)
@@ -263,11 +263,11 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             else:
                 q_positive = query(positive_original) # N x 64
                 if learnable_k is not None:
-                    k_positive = key(learnable_k)
+                    k_positive = key(learnable_k).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
                 elif args.use_input_as_k:
-                    k_positive = key(positive_original.mean(1, keepdim=True))
+                    k_positive = key(positive_original.mean(1, keepdim=True)).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
                 else:
-                    k_positive = key(positive_original).unsqueeze(0).repeat(q_positive.shape[0], 1, 1) # 1 x 64
+                    k_positive = key(positive_original) # 1 x 64
 
                 if args.use_top_k:
                     raw = torch.bmm(q_positive, k_positive.transpose(1, 2)) / np.sqrt(64) + positive_attn_mask
@@ -304,11 +304,12 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                 
                 q_anchor = query(anchor_original) # N x 64
                 if learnable_k is not None:
-                    k_anchor = key(learnable_k)
+                    print(key(learnable_k).unsqueeze(0).shape)
+                    k_anchor = key(learnable_k).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
                 elif args.use_input_as_k:
-                    k_anchor = key(anchor_original.mean(1, keepdim=True))
+                    k_anchor = key(anchor_original.mean(1, keepdim=True)).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
                 else:
-                    k_anchor = key(anchor_original).unsqueeze(0).repeat(q_positive.shape[0], 1, 1) # 1 x 64
+                    k_anchor = key(anchor_original)
                 if args.use_top_k:
                     raw = torch.bmm(q_anchor, k_anchor.transpose(1, 2)) / np.sqrt(64) + anchor_attn_mask
                     
@@ -342,7 +343,8 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             
             loss.backward()
             optimizer.step()
-
+            if attentions_optimizer is not None:
+                attentions_optimizer.step()
             total_loss += loss.item()
             if args.verbose:
                 lr = args.learning_rate
