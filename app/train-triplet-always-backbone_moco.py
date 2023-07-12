@@ -238,7 +238,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     f'loss {cur_loss:5.2f}')
                 start_time = time.time()
         # record running average training loss
-        return total_loss/(batch + 1)
+    return total_loss/(batch + 1)
 def main():
     seed_everything()
     ensure_dirs('./data/model')
