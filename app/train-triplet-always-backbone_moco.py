@@ -136,107 +136,109 @@ def train(model, args, epoch, train_loader, static_embed_loader,
 
 
     for batch, data in enumerate(train_loader):
-        optimizer.zero_grad()
-        esm_optimizer.zero_grad()
-        if attentions_optimizer is not None:
-            attentions_optimizer.zero_grad()
-        anchor, positive = data
-        anchor = [('', seq_dict[a]) for a in anchor]
-        batch_labels, batch_strs, batch_tokens = batch_converter(anchor)
-        batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
+            optimizer.zero_grad()
+            esm_optimizer.zero_grad()
+            if attentions_optimizer is not None:
+                attentions_optimizer.zero_grad()
+            anchor, positive = data
+            anchor = [('', seq_dict[a]) for a in anchor]
+            batch_labels, batch_strs, batch_tokens = batch_converter(anchor)
+            batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
 
-        results = esm_model(batch_tokens.to(device), repr_layers=[args.repr_layer], return_contacts=True)
+            results = esm_model(batch_tokens.to(device), repr_layers=[args.repr_layer], return_contacts=True)
 
-        token_representations = results["representations"][args.repr_layer]
-        anchor = []
+            token_representations = results["representations"][args.repr_layer]
+            anchor = []
+            
+            for i, tokens_len in enumerate(batch_lens):
+                if query is None:
+                    anchor.append(token_representations[i, 1 : tokens_len - 1].mean(0))
+                else:
+                    q = query(token_representations[i, 1 : tokens_len - 1]) # N x 64
+                    if learnable_k is None:
+                        k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
+                    elif args.use_input_as_k:
+                        k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(keepdim=True))
+                    else:
+                        k = key(learnable_k) # 1 x 64
+                    if args.use_top_k:
+                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
+                        
+                        shape = raw.shape
+                        raw = raw.reshape(-1, raw.shape[-1])
+                        _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
+                        smallest = torch.zeros_like(raw)
+                        for j in range(len(raw)):
+                            smallest[j, smallest_value[j]] = 1
+                        smallest = smallest.reshape(shape).bool()
+                        raw = raw.reshape(shape)
+                        raw[smallest] = raw[smallest] + float('-inf')
+                        prob = torch.softmax(raw, -1) # N x 1
+                    elif args.use_top_k_sum:
+                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
+                        weights = raw.sum(-2, keepdim=True)
+                        prob = torch.softmax(weights, -1)
+                    else:
+                        prob = torch.softmax(torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64), 1) # N x 1
+                    anchor.append((prob @ token_representations[i, 1 : tokens_len - 1]).sum(0))
+            anchor = torch.stack(anchor)
+            positive = [('', seq_dict[a]) for a in positive]
+            batch_labels, batch_strs, batch_tokens = batch_converter(positive)
+            batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
+            results = esm_model(batch_tokens.to(device), repr_layers=[args.repr_layer], return_contacts=True)
         
-        for i, tokens_len in enumerate(batch_lens):
-            if query is None:
-                anchor.append(token_representations[i, 1 : tokens_len - 1].mean(0))
-            else:
-                q = query(token_representations[i, 1 : tokens_len - 1]) # N x 64
-                if learnable_k is None:
-                    k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
+            token_representations = results["representations"][args.repr_layer].cuda()
+            positive = []
+            for i, tokens_len in enumerate(batch_lens):
+                if query is None:
+                    positive.append(token_representations[i, 1 : tokens_len - 1].mean(0))
                 else:
-                    k = key(learnable_k) # 1 x 64
-                if args.use_top_k:
-                    raw = k @ q.transpose(0, 1) / np.sqrt(64)
-                    
-                    shape = raw.shape
-                    raw = raw.reshape(-1, raw.shape[-1])
-                    _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                    smallest = torch.zeros_like(raw)
-                    for j in range(len(raw)):
-                        smallest[j, smallest_value[j]] = 1
-                    smallest = smallest.reshape(shape).bool()
-                    raw = raw.reshape(shape)
-                    raw[smallest] = raw[smallest] + float('-inf')
-                    prob = torch.softmax(raw, -1) # N x 1
-                elif args.use_top_k_sum:
-                    raw = k @ q.transpose(0, 1) / np.sqrt(64)
-                    weights = raw.sum(-2, keepdim=True)
-                    prob = torch.softmax(weights, -1)
-                else:
-                    prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
-                print(prob.shape)
-                print(token_representations[i, 1 : tokens_len - 1].shape)
-                anchor.append((prob.transpose(0, 1) @ token_representations[i, 1 : tokens_len - 1]).mean(0))
-        anchor = torch.stack(anchor)
-        positive = [('', seq_dict[a]) for a in positive]
-        batch_labels, batch_strs, batch_tokens = batch_converter(positive)
-        batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
-        results = esm_model(batch_tokens.to(device), repr_layers=[args.repr_layer], return_contacts=True)
-    
-        token_representations = results["representations"][args.repr_layer].cuda()
-        positive = []
-        for i, tokens_len in enumerate(batch_lens):
-            if query is None:
-                positive.append(token_representations[i, 1 : tokens_len - 1].mean(0))
-            else:
-                q = query(token_representations[i, 1 : tokens_len - 1]) # N x 64
-                if learnable_k is None:
-                    k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
-                else:
-                    k = key(learnable_k) # 1 x 64
-                if args.use_top_k:
-                    raw = k @ q.transpose(0, 1) / np.sqrt(64)
-                    
-                    shape = raw.shape
-                    raw = raw.reshape(-1, raw.shape[-1])
-                    _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                    smallest = torch.zeros_like(raw)
-                    for j in range(len(raw)):
-                        smallest[j, smallest_value[j]] = 1
-                    smallest = smallest.reshape(shape).bool()
-                    raw = raw.reshape(shape)
-                    raw[smallest] = raw[smallest] + float('-inf')
-                    prob = torch.softmax(raw, -1) # N x 1
-                elif args.use_top_k_sum:
-                    raw = k @ q.transpose(0, 1) / np.sqrt(64)
-                    weights = raw.sum(-2, keepdim=True)
-                    prob = torch.softmax(weights, -1)
-                else:
-                    prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
-                positive.append((prob.transpose(0, 1) @ token_representations[i, 1 : tokens_len - 1]).mean(0))
-        positive = torch.stack(positive)
-        anchor_out, positive_out = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
-        loss = criterion(anchor_out, positive_out)
-        loss.backward()
-        optimizer.step()
-        esm_optimizer.step()
-        if attentions_optimizer is not None:
-            attentions_optimizer.step()
-        total_loss += loss.item()
-        if args.verbose:
-            lr = args.learning_rate
-            ms_per_batch = (time.time() - start_time) * 1000
-            cur_loss = loss.item()
-            print(f'| epoch {epoch:3d} | {batch:5d}/{len(train_loader):5d} batches | '
-                f'lr {lr:02.4f} | ms/batch {ms_per_batch:6.4f} | '
-                f'loss {cur_loss:5.2f}')
-            start_time = time.time()
-    # record running average training loss
-    return total_loss/(batch + 1)
+                    q = query(token_representations[i, 1 : tokens_len - 1]) # N x 64
+                    if learnable_k is None:
+                        k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
+                    elif args.use_input_as_k:
+                        k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(keepdim=True))
+                    else:
+                        k = key(learnable_k) # 1 x 64
+                    if args.use_top_k:
+                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
+                        
+                        shape = raw.shape
+                        raw = raw.reshape(-1, raw.shape[-1])
+                        _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
+                        smallest = torch.zeros_like(raw)
+                        for j in range(len(raw)):
+                            smallest[j, smallest_value[j]] = 1
+                        smallest = smallest.reshape(shape).bool()
+                        raw = raw.reshape(shape)
+                        raw[smallest] = raw[smallest] + float('-inf')
+                        prob = torch.softmax(raw, -1) # N x 1
+                    elif args.use_top_k_sum:
+                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
+                        weights = raw.sum(-2, keepdim=True)
+                        prob = torch.softmax(weights, -1)
+                    else:
+                        prob = torch.softmax(torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64), 1) # N x 1
+                    positive.append((prob @ token_representations[i, 1 : tokens_len - 1]).sum(0))
+            positive = torch.stack(positive)
+            anchor_out, positive_out = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
+            loss = criterion(anchor_out, positive_out)
+            loss.backward()
+            optimizer.step()
+            esm_optimizer.step()
+            if attentions_optimizer is not None:
+                attentions_optimizer.step()
+            total_loss += loss.item()
+            if args.verbose:
+                lr = args.learning_rate
+                ms_per_batch = (time.time() - start_time) * 1000
+                cur_loss = loss.item()
+                print(f'| epoch {epoch:3d} | {batch:5d}/{len(train_loader):5d} batches | '
+                    f'lr {lr:02.4f} | ms/batch {ms_per_batch:6.4f} | '
+                    f'loss {cur_loss:5.2f}')
+                start_time = time.time()
+        # record running average training loss
+        return total_loss/(batch + 1)
 def main():
     seed_everything()
     ensure_dirs('./data/model')
@@ -286,9 +288,11 @@ def main():
 
     if args.use_extra_attention:
         query = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
-        nn.init.zeros_(query.weight)
+        # nn.init.constant_(query.weight, 1e-3)
+        nn.init.normal_(query.weight, std=np.sqrt(2 / (64 + args.esm_model_dim)))
         key = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
-        nn.init.zeros_(key.weight)
+        # nn.init.constant_(key.weight, 1e-3)
+        nn.init.normal_(key.weight, std=np.sqrt(2 / (64 + args.esm_model_dim)))
         if args.use_learnable_k:
             attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": lr, "momentum": 0.9}, {"params": learnable_k, "lr": lr, "momentum": 0.9}])
         else:
@@ -300,8 +304,6 @@ def main():
     #======================== generate embed =================#
     start_epoch = 1
 
-
-    
     if True:
         new_esm_emb = {}
 
@@ -347,13 +349,7 @@ def main():
             
             torch.save(esm_model.state_dict(), './data/model/esm_' +
                        model_name + '_' + str(epoch) + '.pth')
-            # delete last model checkpoint
-            if epoch != args.adaptive_rate:
-                # os.remove('./data/model/' + model_name + '_' +
-                #           str(epoch-args.adaptive_rate) + '.pth')
-                # os.remove('./data/model/esm_' + model_name + '_' +
-                #           str(epoch-args.adaptive_rate) + '.pth')
-                pass
+
             
         if epoch % args.evaluate_freq == 0:
             dataset = FastaBatchedDataset.from_file(
@@ -406,7 +402,7 @@ def main():
                                 prob = torch.softmax(weights, -1)
                             else:
                                 prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
-                            new_esm_emb[label] = (prob @ out[args.repr_layer].cuda()).mean(0)
+                            new_esm_emb[label] = (prob @ out[args.repr_layer].cuda()).sum(0)
             train_esm_emb = []
                 # for ec in tqdm(list(ec_id_dict.keys())):
             for ec in list(ec_id_dict.keys()):
@@ -465,7 +461,7 @@ def main():
                                 prob = torch.softmax(weights, -1)
                             else:
                                 prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
-                            test_emb[label] = (prob @ out[args.repr_layer].cuda()).mean(0)
+                            test_emb[label] = (prob @ out[args.repr_layer].cuda()).sum(0)
             test_esm_emb = []
             id_ec_test, ec_id_dict_test = get_ec_id_dict('./data/price.csv')
             ids_for_query = list(id_ec_test.keys())

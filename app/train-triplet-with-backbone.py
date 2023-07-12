@@ -347,7 +347,7 @@ def main():
                         layer: t[i, 1 : 1023].clone()
                         for layer, t in representations.items()
                     }
-                    torch.save(out[33], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
+                    torch.save(out[33], os.path.join(args.temp_esm_path, f"epoch{start_epoch}", label + ".pt"))
                     new_esm_emb[label] = out[33].mean(0).cpu()
                     
         original = len(list(dict2.keys()))
@@ -385,7 +385,7 @@ def main():
                         for layer, t in representations.items()
                     }
 
-                    torch.save(out[33], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
+                    torch.save(out[33], os.path.join(args.temp_esm_path, f"epoch{start_epoch}", label + ".pt"))
                     # new_esm_emb_2[label] = out[33].mean(0)
 
         esm_emb = []
@@ -454,7 +454,7 @@ def main():
                             k = key(out[33].cuda())
                             prob = torch.softmax(q @ k.transpose(0, 1) / np.sqrt(64), 0) # N x 1
                             new_esm_emb[label] = (prob @ out[33].cuda()).mean(0)
-                        torch.save(out[33], args.temp_esm_path + "/" + label + ".pt")
+                        torch.save(out[33], os.path.join(args.temp_esm_path, label + ".pt"))
 
             dataset = FastaBatchedDataset.from_file(
                 './data/' + args.training_data + '_single_seq_ECs.fasta')
@@ -478,7 +478,7 @@ def main():
                             layer: t[i, 1 : 1023].clone()
                             for layer, t in representations.items()
                         }
-                        torch.save(out[33], args.temp_esm_path + "/" + label + ".pt")
+                        torch.save(out[33], os.path.join(args.temp_esm_path, label + ".pt"))
 
             esm_emb = []
             # for ec in tqdm(list(ec_id_dict.keys())):
