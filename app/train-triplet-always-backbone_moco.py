@@ -162,7 +162,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     else:
                         k = key(learnable_k) # 1 x 64
                     if args.use_top_k:
-                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
+                        raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
                         
                         shape = raw.shape
                         raw = raw.reshape(-1, raw.shape[-1])
@@ -201,7 +201,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     else:
                         k = key(learnable_k) # 1 x 64
                     if args.use_top_k:
-                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
+                        raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
                         
                         shape = raw.shape
                         raw = raw.reshape(-1, raw.shape[-1])
