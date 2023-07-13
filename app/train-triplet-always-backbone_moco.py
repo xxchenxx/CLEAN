@@ -175,11 +175,11 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                         raw[smallest] = raw[smallest] + float('-inf')
                         prob = torch.softmax(raw, -1) # N x 1
                     elif args.use_top_k_sum:
-                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
+                        raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
                         weights = raw.sum(-2, keepdim=True)
                         prob = torch.softmax(weights, -1)
                     else:
-                        prob = torch.softmax(torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64), 1) # N x 1
+                        prob = torch.softmax(torch.einsum('jk,lk->jl', k, q) / np.sqrt(64), 1) # N x 1
                     anchor.append((prob @ token_representations[i, 1 : tokens_len - 1]).sum(0))
             anchor = torch.stack(anchor)
             positive = [('', seq_dict[a]) for a in positive]
@@ -214,11 +214,11 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                         raw[smallest] = raw[smallest] + float('-inf')
                         prob = torch.softmax(raw, -1) # N x 1
                     elif args.use_top_k_sum:
-                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
+                        raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
                         weights = raw.sum(-2, keepdim=True)
                         prob = torch.softmax(weights, -1)
                     else:
-                        prob = torch.softmax(torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64), 1) # N x 1
+                        prob = torch.softmax(torch.einsum('jk,lk->jl', k, q) / np.sqrt(64), 1) # N x 1
                     positive.append((prob @ token_representations[i, 1 : tokens_len - 1]).sum(0))
             positive = torch.stack(positive)
             anchor_out, positive_out = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))

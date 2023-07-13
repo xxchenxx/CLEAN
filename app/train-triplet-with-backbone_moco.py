@@ -161,7 +161,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     elif args.use_input_as_k:
                         k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(keepdim=True))
                     else:
-                        k = key(learnable_k) # 1 x 64
+                        k = key(learnable_k).unsqueeze(0).repeat(q.shape[0], 1, 1) # 1 x 64
                     if args.use_top_k:
                         raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
                         
@@ -265,7 +265,9 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                 if learnable_k is not None:
                     k_positive = key(learnable_k).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
                 elif args.use_input_as_k:
-                    k_positive = key(positive_original.mean(1, keepdim=True)).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
+
+                    positive_mean = torch.sum(positive_original * positive_avg_mask.unsqueeze(-1).repeat(1, 1, positive_original.shape[-1]), 1) # B x d
+                    k_positive = key(positive_mean).unsqueeze(1)
                 else:
                     k_positive = key(positive_original) # 1 x 64
                 if args.use_top_k:
