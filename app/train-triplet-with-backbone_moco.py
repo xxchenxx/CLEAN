@@ -13,6 +13,7 @@ import argparse
 from CLEAN.distance_map import get_dist_map
 import torch
 import numpy as np
+from functools import partial
 
 from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
 from Bio import SeqIO
@@ -51,9 +52,11 @@ def generate_from_file(file, alphabet, esm_model, args, start_epoch=1):
                 representations = {
                     layer: t.to(device="cpu") for layer, t in out["representations"].items()
                 }
+                batch_lens = (toks != alphabet.padding_idx).sum(1)
+                
                 for i, label in enumerate(labels):
                     out = {
-                        layer: t[i, 1 : 1023].clone()
+                        layer: t[i, 1 : batch_lens[i] - 1].clone()
                         for layer, t in representations.items()
                     }
                     torch.save(out[args.repr_layer], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
@@ -86,9 +89,10 @@ def parse():
 
 from torch.nn.utils.rnn import pad_sequence
 
-def custom_collate(data): #(2)
+def custom_collate(data, ec_list): #(2)
     anchor = [d[0] for d in data]
     positive = [d[1] for d in data]
+    ec_numbers = [ec_list.index(d[2]) for d in data]
     anchor_length = torch.tensor(list(map(len, anchor)))
     positive_length = torch.tensor(list(map(len, positive)))
 
@@ -107,27 +111,28 @@ def custom_collate(data): #(2)
         anchor_avg_mask[i, :anchor_length[i]] = 1 / anchor_length[i]
         positive_avg_mask[i, :positive_length[i]] = 1 / positive_length[i]
 
-    return anchor, positive, anchor_attn_mask, positive_attn_mask, anchor_avg_mask, positive_avg_mask
+    return anchor, positive, anchor_attn_mask, positive_attn_mask, anchor_avg_mask, positive_avg_mask, torch.tensor(ec_numbers)
 
 def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/"):
     train_params = {
         'batch_size': 1,
         'shuffle': True,
     }
+    ec_list = list(ec_id.keys())
     embed_params = {
         'batch_size': 100,
         'shuffle': True,
-        'collate_fn': custom_collate
+        'collate_fn': partial(custom_collate, ec_list=ec_list)
     }
     positive = mine_hard_positives(dist_map, 3)
-    train_data = MoCo_dataset_with_mine_EC_text(id_ec, ec_id, positive)
-    train_embed = MoCo_dataset_with_mine_EC(id_ec, ec_id, positive, path=temp_esm_path)
+    train_data = MoCo_dataset_with_mine_EC_text(id_ec, ec_id, positive, with_ec_number=True)
+    train_embed = MoCo_dataset_with_mine_EC(id_ec, ec_id, positive, path=temp_esm_path, with_ec_number=True)
     train_loader = torch.utils.data.DataLoader(train_data, **train_params)
     static_embed_loader = torch.utils.data.DataLoader(train_embed, **embed_params)
     return train_loader, static_embed_loader
 
 def train(model, args, epoch, train_loader, static_embed_loader,
-          optimizer, device, dtype, criterion, esm_model, esm_optimizer, seq_dict, batch_converter, alphabet, attentions, attentions_optimizer=None, learnable_k=None):
+          optimizer, device, dtype, criterion, esm_model, esm_optimizer, seq_dict, batch_converter, alphabet, attentions, attentions_optimizer=None, learnable_k=None, ec_number_classifier=None, ec_classifier_optimizer=None):
     model.train()
     total_loss = 0.
     start_time = time.time()
@@ -159,7 +164,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     if learnable_k is None:
                         k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
                     elif args.use_input_as_k:
-                        k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(keepdim=True))
+                        k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(0, keepdim=True))
                     else:
                         k = key(learnable_k).unsqueeze(0).repeat(q.shape[0], 1, 1) # 1 x 64
                     if args.use_top_k:
@@ -198,7 +203,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     if learnable_k is None:
                         k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
                     elif args.use_input_as_k:
-                        k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(keepdim=True))
+                        k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(0, keepdim=True))
                     else:
                         k = key(learnable_k) # 1 x 64
                     if args.use_top_k:
@@ -223,6 +228,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     positive.append((prob @ token_representations[i, 1 : tokens_len - 1]).sum(0))
             positive = torch.stack(positive)
             anchor_out, positive_out = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
+
             loss = criterion(anchor_out, positive_out)
             loss.backward()
             optimizer.step()
@@ -243,13 +249,14 @@ def train(model, args, epoch, train_loader, static_embed_loader,
     else:
         for batch, data in enumerate(static_embed_loader):
             optimizer.zero_grad()
-            anchor_original, positive_original, anchor_attn_mask, positive_attn_mask, anchor_avg_mask, positive_avg_mask = data
+            anchor_original, positive_original, anchor_attn_mask, positive_attn_mask, anchor_avg_mask, positive_avg_mask, ec_numbers = data
             anchor_original = anchor_original.cuda()
             positive_original = positive_original.cuda()
             anchor_attn_mask = anchor_attn_mask.cuda()
             positive_attn_mask = positive_attn_mask.cuda()
             anchor_avg_mask = anchor_avg_mask.cuda()
             positive_avg_mask = positive_avg_mask.cuda()
+            ec_numbers = ec_numbers.cuda()
             anchor = []
             positive = []
             if query is None:
@@ -265,8 +272,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                 if learnable_k is not None:
                     k_positive = key(learnable_k).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
                 elif args.use_input_as_k:
-
-                    positive_mean = torch.sum(positive_original * positive_avg_mask.unsqueeze(-1).repeat(1, 1, positive_original.shape[-1]), 1) # B x d
+                    positive_mean = torch.sum(positive_original * positive_avg_mask.unsqueeze(-1).sum(1, keepdim=True), 1) # B x d
                     k_positive = key(positive_mean).unsqueeze(1)
                 else:
                     k_positive = key(positive_original) # 1 x 64
@@ -307,7 +313,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     print(key(learnable_k).unsqueeze(0).shape)
                     k_anchor = key(learnable_k).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
                 elif args.use_input_as_k:
-                    k_anchor = key(anchor_original.mean(1, keepdim=True)).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
+                    k_anchor = key(anchor_original.mean(1, keepdim=True))
                 else:
                     k_anchor = key(anchor_original)
                 if args.use_top_k:
@@ -397,6 +403,8 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000, eta_min=0, last_epoch=-1, verbose=False)
     esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
     criterion = nn.CrossEntropyLoss().to(device)    
+    ec_number_classifier = nn.Sequential(nn.Linear(args.esm_model_dim, 128), nn.ReLU(), nn.Linear(128, len(ec_id.keys()))).cuda()
+    ec_classifier_optimizer = torch.optim.Adam(ec_number_classifier.parameters(), 0.001)
     best_loss = float('inf')
 
     if args.use_learnable_k:
@@ -481,8 +489,10 @@ def main():
                 data_loader = torch.utils.data.DataLoader(
                     dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
                 )
+
                 with torch.no_grad():
                     for batch_idx, (labels, strs, toks) in enumerate(data_loader):
+                        batch_lens = (toks != alphabet.padding_idx).sum(1)
                         print(
                             f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
                         )
@@ -493,8 +503,9 @@ def main():
                         }
 
                         for i, label in enumerate(labels):
+                            tokens_len = batch_lens[i]
                             temp = {
-                                layer: t[i, 1 : 1023].clone()
+                                layer: t[i, 1 : tokens_len - 1].clone()
                                 for layer, t in representations.items()
                             }
                             if not args.use_extra_attention:
@@ -505,7 +516,7 @@ def main():
                                 if learnable_k is None:
                                     k = key(feature)
                                 elif args.use_input_as_k:
-                                    k = key(feature.mean(keepdim=True))
+                                    k = key(feature.mean(1, keepdim=True))
                                 else:
                                     k = key(learnable_k)
                                 if args.use_top_k:
@@ -547,9 +558,12 @@ def main():
                             representations = {
                                 layer: t.to(device="cpu") for layer, t in out["representations"].items()
                             }
+                            batch_lens = (toks != alphabet.padding_idx).sum(1)
+
                             for i, label in enumerate(labels):
+                                tokens_len = batch_lens[i] 
                                 temp = {
-                                    layer: t[i, 1 : 1023].clone()
+                                    layer: t[i, 1 : tokens_len - 1].clone()
                                     for layer, t in representations.items()
                                 }
                                 if args.train_esm_rate > 1:
@@ -583,9 +597,12 @@ def main():
                     representations = {
                         layer: t.to(device="cpu") for layer, t in out["representations"].items()
                     }
+                    batch_lens = (toks != alphabet.padding_idx).sum(1)
+                    
                     for i, label in enumerate(labels):
+                        
                         temp = {
-                            layer: t[i, 1 : 1023].clone()
+                            layer: t[i, 1 : batch_lens[i] - 1].clone()
                             for layer, t in representations.items()
                         }
                         feature = temp[args.repr_layer].cuda()
@@ -596,7 +613,7 @@ def main():
                             if learnable_k is None:
                                 k = key(feature)
                             elif args.use_input_as_k:
-                                k = key(feature.mean(keepdim=True))
+                                k = key(feature.mean(1, keepdim=True))
                             else:
                                 k = key(learnable_k)
                             if args.use_top_k:
@@ -649,7 +666,8 @@ def main():
         train_loss = train(model, args, epoch, train_loader, static_embed_loader,
                            optimizer, device, dtype, criterion, 
                            esm_model, esm_optimizer, seq_dict, 
-                           batch_converter, alphabet, attentions, attentions_optimizer)
+                           batch_converter, alphabet, attentions, attentions_optimizer,
+                           ec_number_classifier=ec_number_classifier, ec_classifier_optimizer=ec_classifier_optimizer)
         scheduler.step()
         # only save the current best model near the end of training
         if (train_loss < best_loss):

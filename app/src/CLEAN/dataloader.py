@@ -185,11 +185,12 @@ def mine_positive(anchor, id_ec, ec_id, mine_pos):
 
 class MoCo_dataset_with_mine_EC_text(torch.utils.data.Dataset):
 
-    def __init__(self, id_ec, ec_id, mine_pos):
+    def __init__(self, id_ec, ec_id, mine_pos, with_ec_number=False):
         self.id_ec = id_ec
         self.ec_id = ec_id
         self.full_list = []
         self.mine_pos = mine_pos
+        self.with_ec_number = with_ec_number
         for ec in ec_id.keys():
             if '-' not in ec:
                 self.full_list.append(ec)
@@ -208,12 +209,13 @@ class MoCo_dataset_with_mine_EC_text(torch.utils.data.Dataset):
 
 class MoCo_dataset_with_mine_EC(torch.utils.data.Dataset):
 
-    def __init__(self, id_ec, ec_id, mine_pos, path='data/esm_data/'):
+    def __init__(self, id_ec, ec_id, mine_pos, path='data/esm_data/', with_ec_number=False):
         self.id_ec = id_ec
         self.ec_id = ec_id
         self.full_list = []
         self.mine_pos = mine_pos
         self.path = path
+        self.with_ec_number = with_ec_number
         for ec in ec_id.keys():
             if '-' not in ec:
                 self.full_list.append(ec)
@@ -229,4 +231,8 @@ class MoCo_dataset_with_mine_EC(torch.utils.data.Dataset):
         # print('anchor:', anchor, 'pos:', pos)
         a = torch.load(f'{self.path}/' + anchor + '.pt')
         p = torch.load(f'{self.path}/' + pos + '.pt')
-        return format_esm(a), format_esm(p)
+        if self.with_ec_number:
+            return format_esm(a), format_esm(p), anchor_ec
+        else:
+            return format_esm(a), format_esm(p)
+    

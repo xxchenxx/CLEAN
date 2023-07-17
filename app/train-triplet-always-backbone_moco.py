@@ -51,9 +51,12 @@ def generate_from_file(file, alphabet, esm_model, args, start_epoch=1, save=True
                 representations = {
                     layer: t.to(device="cpu") for layer, t in out["representations"].items()
                 }
+                batch_lens = (toks != alphabet.padding_idx).sum(1)
+
                 for i, label in enumerate(labels):
+                    token_lens = batch_lens[i]
                     out = {
-                        layer: t[i, 1 : 1023].clone()
+                        layer: t[i, 1 : token_lens - 1].clone()
                         for layer, t in representations.items()
                     }
                     if save:
@@ -369,10 +372,12 @@ def main():
                     representations = {
                         layer: t.to(device="cpu") for layer, t in out["representations"].items()
                     }
+                    batch_lens = (toks != alphabet.padding_idx).sum(1)
 
                     for i, label in enumerate(labels):
+                        tokens_len = batch_lens[i]
                         out = {
-                            layer: t[i, 1 : 1023].clone()
+                            layer: t[i, 1 : tokens_len - 1].clone()
                             for layer, t in representations.items()
                         }
                         if not args.use_extra_attention:
@@ -429,9 +434,12 @@ def main():
                     representations = {
                         layer: t.to(device="cpu") for layer, t in out["representations"].items()
                     }
+                    batch_lens = (toks != alphabet.padding_idx).sum(1)
+
                     for i, label in enumerate(labels):
+                        token_lens = batch_lens[i]
                         out = {
-                            layer: t[i, 1 : 1023].clone()
+                            layer: t[i, 1 : token_lens - 1].clone()
                             for layer, t in representations.items()
                         }
                         if not args.use_extra_attention:
