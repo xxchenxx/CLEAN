@@ -141,6 +141,8 @@ class MoCo(nn.Module):
 
         # create the queue
         self.register_buffer("queue", torch.randn(out_dim, self.K))
+
+        self.ec_number_labels = [None] * self.K
         self.queue.cuda()
         self.queue = nn.functional.normalize(self.queue, dim=0)
 
@@ -157,7 +159,7 @@ class MoCo(nn.Module):
             param_k.data = param_k.data * self.m + param_q.data * (1.0 - self.m)
 
     @torch.no_grad()
-    def _dequeue_and_enqueue(self, keys):
+    def _dequeue_and_enqueue(self, keys, ec_numbers=None):
         # gather keys before updating queue
         # keys = concat_all_gather(keys)
 
@@ -173,13 +175,18 @@ class MoCo(nn.Module):
         if ptr + batch_size > self.queue.shape[1]:
             self.queue[:, ptr : ptr + batch_size] = (keys.T)[:, :(self.queue.shape[1] - ptr)]
             self.queue[:, :ptr + batch_size - self.queue.shape[1]] = (keys.T)[:, (self.queue.shape[1] - ptr):]
+            if ec_numbers is not None:
+                self.ec_number_labels[ptr : ptr + batch_size] = ec_numbers[:(self.queue.shape[1] - ptr)]
+                self.ec_number_labels[:ptr + batch_size - self.queue.shape[1]] = ec_numbers[(self.queue.shape[1] - ptr):]
         else:
             self.queue[:, ptr : ptr + batch_size] = keys.T
+            if ec_numbers is not None:
+                self.ec_number_labels[ptr : ptr + batch_size] = ec_numbers
         ptr = (ptr + batch_size) % self.K  # move pointer
 
         self.queue_ptr[0] = ptr
 
-    def forward(self, im_q, im_k):
+    def forward(self, im_q, im_k, ec_numbers=None):
         """
         Input:
             im_q: a batch of query images
@@ -215,6 +222,9 @@ class MoCo(nn.Module):
         labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
 
         # dequeue and enqueue
-        self._dequeue_and_enqueue(k)
+        self._dequeue_and_enqueue(k, ec_numbers)
 
-        return logits, labels
+        if ec_numbers is None:
+            return logits, labels
+        else:
+            return logits, labels, self.ec_number_labels
