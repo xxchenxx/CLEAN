@@ -19,6 +19,10 @@ class ESM2(nn.Module):
         attention_heads: int = 20,
         alphabet: Union[esm.data.Alphabet, str] = "ESM-1b",
         token_dropout: bool = True,
+        use_adapter=False,
+        adapter_rank=8,
+        use_lora=False,
+        lora_rank=8,
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -35,7 +39,10 @@ class ESM2(nn.Module):
         self.prepend_bos = alphabet.prepend_bos
         self.append_eos = alphabet.append_eos
         self.token_dropout = token_dropout
-
+        self.use_adapter = use_adapter
+        self.adapter_rank = adapter_rank
+        self.use_lora = use_lora
+        self.lora_rank = lora_rank
         self._init_submodules()
 
     def _init_submodules(self):
@@ -55,6 +62,10 @@ class ESM2(nn.Module):
                     add_bias_kv=False,
                     use_esm1b_layer_norm=True,
                     use_rotary_embeddings=True,
+                    use_adapter=self.use_adapter,
+                    adapter_rank=self.adapter_rank,
+                    use_lora=self.use_lora,
+                    lora_rank=self.lora_rank
                 )
                 for _ in range(self.num_layers)
             ]

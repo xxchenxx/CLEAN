@@ -92,14 +92,22 @@ class TransformerLayer(nn.Module):
         add_bias_kv=True,
         use_esm1b_layer_norm=False,
         use_rotary_embeddings: bool = False,
+        use_adapter=False,
+        adapter_rank=8,
+        use_lora=False,
+        lora_rank=8
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.ffn_embed_dim = ffn_embed_dim
         self.attention_heads = attention_heads
         self.use_rotary_embeddings = use_rotary_embeddings
+        self.use_adapter = use_adapter
+        self.adapter_rank = adapter_rank
+        self.use_lora = use_lora
+        self.lora_rank = lora_rank
         self._init_submodules(add_bias_kv, use_esm1b_layer_norm)
-
+        
     def _init_submodules(self, add_bias_kv, use_esm1b_layer_norm):
         BertLayerNorm = ESM1bLayerNorm if use_esm1b_layer_norm else ESM1LayerNorm
 
@@ -109,6 +117,11 @@ class TransformerLayer(nn.Module):
             add_bias_kv=add_bias_kv,
             add_zero_attn=False,
             use_rotary_embeddings=self.use_rotary_embeddings,
+            use_adapter=self.use_adapter,
+            adapter_rank=self.adapter_rank,
+            use_lora=self.use_lora,
+            lora_rank=self.lora_rank
+
         )
         self.self_attn_layer_norm = BertLayerNorm(self.embed_dim)
 

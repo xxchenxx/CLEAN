@@ -21,11 +21,11 @@ def _has_regression_weights(model_name):
     return not ("esm1v" in model_name or "esm_if" in model_name or "270K" in model_name or "500K" in model_name)
 
 
-def load_model_and_alphabet(model_name):
+def load_model_and_alphabet(model_name, use_adapter=False, adapter_rank=8, use_lora=False, lora_rank=8):
     if model_name.endswith(".pt"):  # treat as filepath
-        return load_model_and_alphabet_local(model_name)
+        return load_model_and_alphabet_local(model_name, use_adapter, adapter_rank, use_lora, lora_rank)
     else:
-        return load_model_and_alphabet_hub(model_name)
+        return load_model_and_alphabet_hub(model_name, use_adapter, adapter_rank, use_lora, lora_rank)
 
 
 def load_hub_workaround(url):
@@ -64,7 +64,7 @@ def load_model_and_alphabet_hub(model_name):
     return load_model_and_alphabet_core(model_name, model_data, regression_data)
 
 
-def load_model_and_alphabet_local(model_location):
+def load_model_and_alphabet_local(model_location, use_adapter=False, adapter_rank=8, use_lora=False, lora_rank=16):
     """Load from local path. The regression weights need to be co-located"""
     model_location = Path(model_location)
     model_data = torch.load(str(model_location), map_location="cpu")
@@ -77,7 +77,7 @@ def load_model_and_alphabet_local(model_location):
             regression_data = None
     else:
         regression_data = None
-    return load_model_and_alphabet_core(model_name, model_data, regression_data)
+    return load_model_and_alphabet_core(model_name, model_data, regression_data, use_adapter=use_adapter, adapter_rank=adapter_rank, use_lora=use_lora, lora_rank=lora_rank)
 
 
 def has_emb_layer_norm_before(model_state):
@@ -164,7 +164,7 @@ def _load_model_and_alphabet_core_v1(model_data):
     return model, alphabet, model_state
 
 
-def _load_model_and_alphabet_core_v2(model_data):
+def _load_model_and_alphabet_core_v2(model_data, use_adapter, adapter_rank, use_lora, lora_rank):
     def upgrade_state_dict(state_dict):
         """Removes prefixes 'model.encoder.sentence_encoder.' and 'model.encoder.'."""
         prefixes = ["encoder.sentence_encoder.", "encoder."]
@@ -182,18 +182,22 @@ def _load_model_and_alphabet_core_v2(model_data):
         attention_heads=cfg.encoder_attention_heads,
         alphabet=alphabet,
         token_dropout=cfg.token_dropout,
+        use_adapter=use_adapter,
+        adapter_rank=adapter_rank,
+        use_lora=use_lora,
+        lora_rank=lora_rank
     )
     return model, alphabet, state_dict
 
 
-def load_model_and_alphabet_core(model_name, model_data, regression_data=None):
+def load_model_and_alphabet_core(model_name, model_data, regression_data=None, use_adapter=False, adapter_rank=8, use_lora=False, lora_rank=8):
     if regression_data is not None:
         model_data["model"].update(regression_data["model"])
 
     if model_name.startswith("esm2"):
-        model, alphabet, model_state = _load_model_and_alphabet_core_v2(model_data)
+        model, alphabet, model_state = _load_model_and_alphabet_core_v2(model_data, use_adapter, adapter_rank, use_lora, lora_rank)
     else:
-        model, alphabet, model_state = _load_model_and_alphabet_core_v1(model_data)
+        model, alphabet, model_state = _load_model_and_alphabet_core_v1(model_data, use_adapter, adapter_rank, use_lora, lora_rank)
 
     expected_keys = set(model.state_dict().keys())
     found_keys = set(model_state.keys())
@@ -209,7 +213,7 @@ def load_model_and_alphabet_core(model_name, model_data, regression_data=None):
             error_msgs.append(f"Unexpected key(s) in state_dict: {unexpected}.")
 
         if error_msgs:
-            raise RuntimeError(
+            print(
                 "Error(s) in loading state_dict for {}:\n\t{}".format(
                     model.__class__.__name__, "\n\t".join(error_msgs)
                 )
@@ -219,7 +223,7 @@ def load_model_and_alphabet_core(model_name, model_data, regression_data=None):
                 "Regression weights not found, predicting contacts will not produce correct results."
             )
 
-    model.load_state_dict(model_state, strict=regression_data is not None)
+    model.load_state_dict(model_state, strict=False)
 
     return model, alphabet
 

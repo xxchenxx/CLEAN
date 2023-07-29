@@ -84,6 +84,10 @@ class MultiheadAttention(nn.Module):
         self_attention: bool = False,
         encoder_decoder_attention: bool = False,
         use_rotary_embeddings: bool = False,
+        use_adapter=False,
+        adapter_rank=8,
+        use_lora=False,
+        lora_rank=8,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -109,7 +113,18 @@ class MultiheadAttention(nn.Module):
         self.k_proj = nn.Linear(self.kdim, embed_dim, bias=bias)
         self.v_proj = nn.Linear(self.vdim, embed_dim, bias=bias)
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
-
+        self.use_lora = use_lora
+        self.lora_rank = lora_rank
+        if self.use_lora:
+            self.q_proj_lora_d = nn.Linear(embed_dim, self.lora_rank)
+            self.q_proj_lora_u = nn.Linear(self.lora_rank, embed_dim)
+            self.v_proj_lora_d = nn.Linear(embed_dim, self.lora_rank)
+            self.v_proj_lora_u = nn.Linear(self.lora_rank, embed_dim)
+            # TODO: make the standard deviation a param
+            nn.init.normal_(self.q_proj_lora_d.weight, 0, 0.02)
+            nn.init.normal_(self.v_proj_lora_d.weight, 0, 0.02)
+            nn.init.zeros_(self.q_proj_lora_u.weight)
+            nn.init.zeros_(self.v_proj_lora_u.weight)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
 
         if add_bias_kv:
@@ -119,7 +134,13 @@ class MultiheadAttention(nn.Module):
             self.bias_k = self.bias_v = None
 
         self.add_zero_attn = add_zero_attn
-
+        self.use_adapter = use_adapter
+        self.down_size = adapter_rank
+        if self.use_adapter:
+            self.adapter_down_proj = nn.Linear(embed_dim, self.down_size)
+            self.adapter_non_linear_func = nn.ReLU()
+            self.adapter_up_proj = nn.Linear(self.down_size, embed_dim)
+            self.adapter_layer_norm = nn.LayerNorm(embed_dim)
         self.reset_parameters()
 
         self.onnx_trace = False
@@ -202,6 +223,7 @@ class MultiheadAttention(nn.Module):
             # A workaround for quantization to work. Otherwise JIT compilation
             # treats bias in linear module as method.
             and not torch.jit.is_scripting()
+            and not self.use_adapter
             and not need_head_weights
         ):
             assert key is not None and value is not None
@@ -243,6 +265,9 @@ class MultiheadAttention(nn.Module):
             q = self.q_proj(query)
             k = self.k_proj(query)
             v = self.v_proj(query)
+            if self.use_lora:
+                q += self.lora_alpha * self.q_proj_lora_u(self.q_proj_lora_d(query))
+                v += self.lora_alpha * self.v_proj_lora_u(self.v_proj_lora_d(query))
         elif self.encoder_decoder_attention:
             # encoder-decoder attention
             q = self.q_proj(query)
@@ -252,12 +277,18 @@ class MultiheadAttention(nn.Module):
             else:
                 k = self.k_proj(key)
                 v = self.v_proj(key)
-
+            if self.use_lora:
+                q += self.lora_alpha * self.q_proj_lora_u(self.q_proj_lora_d(query))
+                if key is not None:
+                    v += self.lora_alpha * self.v_proj_lora_u(self.v_proj_lora_d(key))
         else:
             assert key is not None and value is not None
             q = self.q_proj(query)
             k = self.k_proj(key)
             v = self.v_proj(value)
+            if self.use_lora:
+                q += self.lora_alpha * self.q_proj_lora_u(self.q_proj_lora_d(query))
+                v += self.lora_alpha * self.v_proj_lora_u(self.v_proj_lora_d(value))
         q *= self.scaling
 
         if self.bias_k is not None:
@@ -392,6 +423,17 @@ class MultiheadAttention(nn.Module):
             attn = attn.contiguous().view(tgt_len, bsz, embed_dim)
         else:
             attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+
+        if self.use_adapter:
+            # with residual
+            residual = attn
+            down = self.adapter_down_proj(attn)
+            down = self.adapter_non_linear_func(down)
+            down = nn.functional.dropout(down, p=self.dropout, training=self.training)
+            up = self.adapter_up_proj(down)
+            up = self.adapter_layer_norm(up)
+            attn = residual + up
+            
         attn = self.out_proj(attn)
         attn_weights: Optional[Tensor] = None
         if need_weights:
