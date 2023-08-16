@@ -84,6 +84,7 @@ def parse():
     parser.add_argument('--esm-model', type=str, default='esm1b_t33_650M_UR50S.pt')
     parser.add_argument('--esm-model-dim', type=int, default=1280)
     parser.add_argument('--repr-layer', type=int, default=33)
+    parser.add_argument('--lora-rank', type=int, default=16)
     args = parser.parse_args()
     return args
 
@@ -270,7 +271,7 @@ def main():
     
 
     esm_model, alphabet = pretrained.load_model_and_alphabet(
-        args.esm_model, use_lora=True, lora_rank=16)
+        args.esm_model, use_lora=True, lora_rank=args.lora_rank)
     esm_model = esm_model.to(device)
 
     batch_converter = alphabet.get_batch_converter()
@@ -287,8 +288,9 @@ def main():
             parameters.append(p)
         else:
             p.requires_grad = False
+
     print(parameters)
-    esm_optimizer = torch.optim.AdamW(parameters, lr=1e-4, betas=(0.9, 0.999))
+    esm_optimizer = torch.optim.AdamW(parameters, lr=1e-5, betas=(0.9, 0.999))
     criterion = nn.CrossEntropyLoss().to(device)    
     best_loss = float('inf')
 

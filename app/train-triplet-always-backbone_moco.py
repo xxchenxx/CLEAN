@@ -83,6 +83,7 @@ def parse():
     parser.add_argument('--evaluate_freq', type=int, default=50)
     parser.add_argument('--esm-model', type=str, default='esm1b_t33_650M_UR50S.pt')
     parser.add_argument('--esm-model-dim', type=int, default=1280)
+    parser.add_argument('--esm_learning_rate', type=float, default=1e-5)
     parser.add_argument('--repr-layer', type=int, default=33)
     args = parser.parse_args()
     return args
@@ -114,7 +115,7 @@ def custom_collate(data): #(2)
 
 def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/"):
     train_params = {
-        'batch_size': 4,
+        'batch_size': 2,
         'shuffle': True,
     }
     embed_params = {
@@ -280,7 +281,7 @@ def main():
     model = MoCo(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim).cuda()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01, betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000, eta_min=0, last_epoch=-1, verbose=False)
-    esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
+    esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=args.esm_learning_rate, betas=(0.9, 0.999))
     criterion = nn.CrossEntropyLoss().to(device)    
     best_loss = float('inf')
 
@@ -346,12 +347,6 @@ def main():
         if epoch % args.adaptive_rate == 0 and epoch != epochs + 1:
             optimizer = torch.optim.Adam(
                 model.parameters(), lr=lr, betas=(0.9, 0.999))
-            # save updated model
-            torch.save(model.state_dict(), './data/model/' +
-                       model_name + '_' + str(epoch) + '.pth')
-            
-            torch.save(esm_model.state_dict(), './data/model/esm_' +
-                       model_name + '_' + str(epoch) + '.pth')
 
             
         if epoch % args.evaluate_freq == 0:

@@ -115,11 +115,12 @@ class MultiheadAttention(nn.Module):
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.use_lora = use_lora
         self.lora_rank = lora_rank
+        self.lora_alpha = 16
         if self.use_lora:
-            self.q_proj_lora_d = nn.Linear(embed_dim, self.lora_rank)
-            self.q_proj_lora_u = nn.Linear(self.lora_rank, embed_dim)
-            self.v_proj_lora_d = nn.Linear(embed_dim, self.lora_rank)
-            self.v_proj_lora_u = nn.Linear(self.lora_rank, embed_dim)
+            self.q_proj_lora_d = nn.Linear(embed_dim, self.lora_rank, bias=False)
+            self.q_proj_lora_u = nn.Linear(self.lora_rank, embed_dim, bias=False)
+            self.v_proj_lora_d = nn.Linear(embed_dim, self.lora_rank, bias=False)
+            self.v_proj_lora_u = nn.Linear(self.lora_rank, embed_dim, bias=False)
             # TODO: make the standard deviation a param
             nn.init.normal_(self.q_proj_lora_d.weight, 0, 0.02)
             nn.init.normal_(self.v_proj_lora_d.weight, 0, 0.02)
@@ -137,9 +138,9 @@ class MultiheadAttention(nn.Module):
         self.use_adapter = use_adapter
         self.down_size = adapter_rank
         if self.use_adapter:
-            self.adapter_down_proj = nn.Linear(embed_dim, self.down_size)
+            self.adapter_down_proj = nn.Linear(embed_dim, self.down_size, bias=False)
             self.adapter_non_linear_func = nn.ReLU()
-            self.adapter_up_proj = nn.Linear(self.down_size, embed_dim)
+            self.adapter_up_proj = nn.Linear(self.down_size, embed_dim, bias=False)
             self.adapter_layer_norm = nn.LayerNorm(embed_dim)
         self.reset_parameters()
 
