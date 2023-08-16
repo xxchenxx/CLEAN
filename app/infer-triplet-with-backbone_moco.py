@@ -178,21 +178,21 @@ def main():
         attentions_optimizer = None
     #======================== generate embed =================#
     
-    seq = 'MDGVLWRVRTAALMAALLALAAWALVWASPSVEAQSNPYQRGPNPTRSALTADGPFSVATYTVSRLSVSGFGGGVIYYPTGTSLTFGGIAMSPGYTADASSLAWLGRRLASHGFVVLVINTNSRFDYPDSRASQLSAALNYLRTSSPSAVRARLDANRLAVAGHSMGGGGTLRIAEQNPSLKAAVPLTPWHTDKTFNTSVPVLIVGAEADTVAPVSQHAIPFYQNLPSTTPKVYVELDNASHFAPNSNNAAISVYTISWMKLWVDNDTRYRQFLCNVNDPALSDFRTNNRHCQ'
     esm_model.load_state_dict(torch.load("data/model/moco_esm_best_design1.pth"))
     model.load_state_dict(torch.load("data/model/moco_best_design1.pth"))
     query.load_state_dict(torch.load("data/model/moco_query_best_design1.pth"))
     key.load_state_dict(torch.load("data/model/moco_key_best_design1.pth"))
 
     dataset = FastaBatchedDataset.from_file(
-        './data/negative_samples.fasta')
+        './data/split10.fasta')
     batches = dataset.get_batch_indices(
-        4096, extra_toks_per_seq=1)
+        1024, extra_toks_per_seq=1)
     data_loader = torch.utils.data.DataLoader(
         dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
     )
     probs = {}
     for batch_idx, (labels, strs, toks) in enumerate(data_loader):
+        if batch_idx > 50: break
         print(
             f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
         )
@@ -237,18 +237,25 @@ def main():
                 prob = torch.softmax(weights, -1)
             else:
                 prob = torch.softmax(torch.einsum('jk,lk->jl', k, q) / np.sqrt(64), 1) # N x 1
-            probs[label] = prob.clone()
+            probs[label] = prob.clone().detach().cpu()
     print(probs)
-    ec = pd.read_csv("data/negative_samples.csv", sep='\t')
+    ec = pd.read_csv("data/training_data_10_parsed.csv", sep=',')
     result = {}
-    f = open("result.json", "w")
+    f = open("split10_result.json", "w")
     for label in probs:
         prob_sum = torch.sum(probs[label], 0)
         important = torch.argsort(prob_sum, 0, descending=True)
-        ec_number = ec.loc[ec['Entry'] == label, 'EC number'].iloc[0]
+        ec_number = ec.loc[ec['UniprotID'] == label, 'EC number'].iloc[0]
+        pdb = ec.loc[ec['UniprotID'] == label, 'parsed_PDB'].iloc[0]
+        if 'AF' in pdb:
+            pdb_list = pdb.split(";")
+            for pdb in pdb_list:
+                print(pdb)
+                values = open("/mnt/vita-nas/xuxi/")
+            assert False
         line = {"label": label, 'EC number': ec_number, "position": str(list(important[:10].detach().cpu().numpy() + 1))}
         print(line)
         f.write(json.dumps(line)+'\n')
-    torch.save(probs, 'pur_probs.pth')
+    torch.save(probs, 'split10_probs.pth')
 if __name__ == '__main__':
     main()

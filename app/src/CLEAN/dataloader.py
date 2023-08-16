@@ -2,6 +2,8 @@ import torch
 import random
 from .utils import format_esm
 import numpy as np
+import pandas as pd
+
 
 def mine_hard_negative(dist_map, knn=10):
     #print("The number of unique EC numbers: ", len(dist_map.keys()))
@@ -236,3 +238,77 @@ class MoCo_dataset_with_mine_EC(torch.utils.data.Dataset):
         else:
             return format_esm(a), format_esm(p)
     
+
+
+class MoCo_dataset_with_mine_EC_and_SMILE(torch.utils.data.Dataset):
+
+    def __init__(self, id_ec, ec_id, mine_pos, path='data/esm_data/', with_ec_number=False):
+        self.id_ec = id_ec
+        self.ec_id = ec_id
+        self.full_list = []
+        self.mine_pos = mine_pos
+        self.path = path
+        self.with_ec_number = with_ec_number
+        for ec in ec_id.keys():
+            if '-' not in ec:
+                self.full_list.append(ec)
+        
+        self.smile_embed = torch.load("Rhea_tensors.pt")
+        self.rhea_map = pd.read_csv("rhea2ec.tsv", sep='\t')
+    def __len__(self):
+        return len(self.full_list)
+
+    def __getitem__(self, index):
+        anchor_ec = self.full_list[index]
+        rhea = self.rhea_map.loc[self.rhea_map.ID == anchor_ec, 'RHEA_ID'].values
+        smile_features = []
+        for i in rhea:
+            try:
+                smile_features.append(self.smile_embed[str(i)])
+            except:
+                pass
+            
+        if len(smile_features) == 0:
+            smile_features = [torch.zeros_like(next(iter(self.smile_embed.items()))[1])]
+        anchor = random.choice(self.ec_id[anchor_ec])
+        # pos = mine_positive(anchor, self.id_ec, self.ec_id, self.mine_pos)
+        pos = random_positive(anchor, self.id_ec, self.ec_id)
+        # print('anchor:', anchor, 'pos:', pos)
+        a = torch.load(f'{self.path}/' + anchor + '.pt')
+        p = torch.load(f'{self.path}/' + pos + '.pt')
+        if self.with_ec_number:
+            return format_esm(a), format_esm(p), smile_features, anchor_ec
+        else:
+            return format_esm(a), format_esm(p), smile_features
+        
+class MoCo_dataset_with_mine_EC_and_SMILE_text(torch.utils.data.Dataset):
+
+    def __init__(self, id_ec, ec_id, mine_pos, path='data/esm_data/', with_ec_number=False):
+        self.id_ec = id_ec
+        self.ec_id = ec_id
+        self.full_list = []
+        self.mine_pos = mine_pos
+        self.path = path
+        self.with_ec_number = with_ec_number
+        for ec in ec_id.keys():
+            if '-' not in ec:
+                self.full_list.append(ec)
+        
+        self.smile_embed = torch.load("Rhea_tensors.pt")
+        self.rhea_map = pd.read_csv("rhea2ec.tsv", sep='\t')
+
+    def __len__(self):
+        return len(self.full_list)
+
+    def __getitem__(self, index):
+        anchor_ec = self.full_list[index]
+        rhea = self.rhea_map.loc[self.rhea_map.ID == anchor_ec, 'RHEA_ID'].values
+        smile_features = [self.smile_embed[i] for i in rhea]
+        anchor = random.choice(self.ec_id[anchor_ec])
+        # pos = mine_positive(anchor, self.id_ec, self.ec_id, self.mine_pos)
+        positive = random_positive(anchor, self.id_ec, self.ec_id)
+        if self.with_ec_number:
+            return anchor, positive, smile_features, anchor_ec
+        else:
+            return anchor, positive, smile_features
+        

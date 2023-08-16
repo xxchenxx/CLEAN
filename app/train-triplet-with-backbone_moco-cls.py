@@ -37,8 +37,9 @@ def calculate_matrix(dict_, mode='linear'):
                     break
                 else:
                     k += 1
-            score_matrix[i, j] = 5 - k
-            score_matrix[j, i] = 5 - k
+            score_matrix[i, j] = k
+            score_matrix[j, i] = k
+    score_matrix[score_matrix >= 4] = 100000
     return score_matrix
 
 
@@ -103,6 +104,7 @@ def parse():
     parser.add_argument('--use_input_as_k', action="store_true")
     parser.add_argument('--use_ec_cls_loss', action="store_true")
     parser.add_argument('--use_weighted_loss', action="store_true")
+    parser.add_argument('--use_ranking_loss', action="store_true")
     parser.add_argument('--temp_esm_path', type=str, required=True)
     parser.add_argument('--evaluate_freq', type=int, default=50)
     parser.add_argument('--esm-model', type=str, default='esm1b_t33_650M_UR50S.pt')
@@ -383,6 +385,19 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                             weights.append(score_matrix[buffer_ec[predicted[i] - 1]][ec_numbers[i]])
                 weights = torch.tensor(weights).cuda()
                 loss = (loss * weights).mean()
+            elif args.use_ranking_loss:
+                output, target = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
+                loss = criterion(output, target)
+                distances = torch.cdist(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
+                
+                label_distances = torch.zeros_like(distances)
+                for i in range(len(output)):
+                    for j in range(i + 1, len(output)):
+                        label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
+                m = torch.clamp(3 - label_distances * distances, min=0)
+                m = torch.triu(m, diagonal=1)
+                loss_distance = torch.sum(m)
+                loss += 1e-6 * loss_distance
             else:
                 output, target = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
                 loss = criterion(output, target)
@@ -390,16 +405,19 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             if args.use_ec_cls_loss:
                 ec_number_loss = nn.CrossEntropyLoss()(ec_number_classifier(anchor), ec_numbers)
                 loss += ec_number_loss
-                ec_number_classifier.backward()
+                
             loss.backward()
             optimizer.step()
+
+            if args.use_ec_cls_loss:
+                ec_number_classifier.step()
             if attentions_optimizer is not None:
                 attentions_optimizer.step()
             total_loss += loss.item()
             if args.verbose:
                 lr = args.learning_rate
                 ms_per_batch = (time.time() - start_time) * 1000
-                cur_loss = total_loss 
+                cur_loss = loss.item()
                 print(f'| epoch {epoch:3d} | {batch:5d}/{len(static_embed_loader):5d} batches | '
                     f'lr {lr:02.4f} | ms/batch {ms_per_batch:6.4f} | '
                     f'loss {cur_loss:5.2f}')
