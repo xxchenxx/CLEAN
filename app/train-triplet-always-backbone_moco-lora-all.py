@@ -78,7 +78,7 @@ def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/
     return train_loader, None
 
 def train(model, args, epoch, train_loader, static_embed_loader,
-          optimizer, device, dtype, criterion, esm_model, esm_optimizer, seq_dict, batch_converter, alphabet, attentions, wandb_logger, attentions_optimizer=None, learnable_k=None, ec_id=None, score_matrix=None):
+          optimizer, device, dtype, criterion, esm_model, esm_optimizer, seq_dict, batch_converter, alphabet, attentions, wandb_logger, attentions_optimizer=None, learnable_k=None, ec_id=None, score_matrix=None, print_freq=1):
     model.train()
     total_loss = 0.
     start_time = time.time()
@@ -132,6 +132,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             metrics['loss'] = loss.item()
             distances = torch.cdist(anchor_out.to(device=device, dtype=dtype), anchor_out.to(device=device, dtype=dtype))
             label_distances = torch.zeros_like(distances)
+            metrics['distance_values'] = wandb.Histogram(distances.detach().cpu().numpy())
             for i in range(len(anchor_out)):
                 for j in range(i + 1, len(anchor_out)):
                     label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
