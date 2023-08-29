@@ -270,7 +270,7 @@ def main():
     
 
     esm_model, alphabet = pretrained.load_model_and_alphabet(
-        args.esm_model, use_adapter=True, adapter_rank=16, use_lora=False, adapter_rank=16)
+        args.esm_model, use_adapter=True, adapter_rank=16, use_lora=False, lora_rank=16)
     esm_model = esm_model.to(device)
 
     batch_converter = alphabet.get_batch_converter()
@@ -287,7 +287,7 @@ def main():
             parameters.append(p)
         else:
             p.requires_grad = False
-    esm_optimizer = torch.optim.AdamW(parameters, lr=1e-4, betas=(0.9, 0.999))
+    esm_optimizer = torch.optim.AdamW(parameters, lr=1e-5, betas=(0.9, 0.999))
     criterion = nn.CrossEntropyLoss().to(device)    
     best_loss = float('inf')
 
@@ -355,10 +355,10 @@ def main():
                 model.parameters(), lr=lr, betas=(0.9, 0.999))
             # save updated model
             torch.save(model.state_dict(), './data/model/' +
-                       model_name + '_' + str(epoch) + '.pth')
+                       model_name + '.pth')
             
             torch.save(esm_model.state_dict(), './data/model/esm_' +
-                       model_name + '_' + str(epoch) + '.pth')
+                       model_name + '.pth')
 
             
         if epoch % args.evaluate_freq == 0:

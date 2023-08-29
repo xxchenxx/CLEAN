@@ -241,15 +241,50 @@ class WeightedMeanFeatureFuser(nn.Module):
         weighted_latents = torch.sum(weights[None, :] * torch.stack(latents, dim=-1), dim=-1)
         return weighted_latents
 
+class Fuser(nn.Module):
+
+    def __init__(self, esm_model_dim, smile_embedding_size, fuse_mode):
+        super().__init__()
+        self.esm_model_dim = esm_model_dim
+        self.smile_embedding_size = smile_embedding_size
+        self.fuse_mode = fuse_mode
+
+        if self.fuse_mode == 'weighted_mean':
+            self.fuser = WeightedMeanFeatureFuser(2, esm_model_dim)
+            self.proj = nn.Linear(smile_embedding_size, esm_model_dim)
+        elif self.fuse_mode == 'mlp':
+            self.fuser = nn.Linear(smile_embedding_size + esm_model_dim, esm_model_dim)
+        elif self.fuse_mode == 'no_fuse':
+            self.fuser = None
+
+    
+    def forward(self, esm_embed, smile_embed):
+
+        if self.fuse_mode == 'no_fuse':
+            return esm_embed
+        
+
+        if self.fuse_mode == 'weighted_mean':
+            projected_smile_embed = self.proj(smile_embed)
+            fused_feature = self.fuser([esm_embed, projected_smile_embed])
+        elif self.fuse_mode == 'mlp':
+            fused_feature = self.fuser(torch.cat([esm_embed, projected_smile_embed], -1))
+        else:
+            raise NotImplementedError
+        return fused_feature
+            
+        
+
 class MoCo_with_SMILE(nn.Module):
-    def __init__(self, hidden_dim, out_dim, device, dtype, drop_out=0.1, esm_model_dim=1280):
+    def __init__(self, hidden_dim, out_dim, device, dtype, drop_out=0.1, esm_model_dim=1280, 
+                 use_negative_smile=False, smile_embedding_size = 384, fuse_mode = 'weighted_mean'):
         super(MoCo_with_SMILE, self).__init__()
         self.K = 1000
         self.m = 0.999
         self.T = 0.07
 
-        self.fuser = WeightedMeanFeatureFuser(2, esm_model_dim)
-        self.proj = nn.Linear(600, esm_model_dim)
+        self.fuser = Fuser(esm_model_dim, smile_embedding_size, fuse_mode)
+        
         self.encoder_q = MoCoEncoder(hidden_dim, out_dim, device, dtype, drop_out=0.1, esm_model_dim=esm_model_dim)
         self.encoder_k = MoCoEncoder(hidden_dim, out_dim, device, dtype, drop_out=0.1,esm_model_dim=esm_model_dim)
 
@@ -267,6 +302,15 @@ class MoCo_with_SMILE(nn.Module):
         self.queue = nn.functional.normalize(self.queue, dim=0)
 
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+
+        self.use_negative_smile = use_negative_smile
+
+        if use_negative_smile:
+            self.negative_classifier = nn.Sequential(
+                nn.Linear(esm_model_dim, 64), 
+                nn.ReLU(),
+                nn.Linear(64, 2)
+            )
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
@@ -306,7 +350,7 @@ class MoCo_with_SMILE(nn.Module):
 
         self.queue_ptr[0] = ptr
 
-    def forward(self, im_q, im_k, smile, ec_numbers=None):
+    def forward(self, im_q, im_k, smile, negative_smile, ec_numbers=None):
         """
         Input:
             im_q: a batch of query images
@@ -317,16 +361,32 @@ class MoCo_with_SMILE(nn.Module):
 
         # compute query features
 
-        im_q = self.fuser([im_q, self.proj(smile.mean(1))])
-        im_k = self.fuser([im_k, self.proj(smile.mean(1))])
+        fused_im_q = self.fuser(im_q, smile)
+        fused_im_k = self.fuser(im_k, smile)
+        metrics = {}
+        if self.use_negative_smile:
+            metrics['negative_smile_mean'] = negative_smile.mean()
+            metrics['smile_mean'] = smile.mean()
+            negative_im_q = self.fuser(im_q, negative_smile)
 
-        q = self.encoder_q(im_q)  # queries: NxC
+            concat_labels = torch.cat([torch.ones(negative_im_q.shape[0]), torch.zeros(im_q.shape[0])]).to(negative_im_q.device).long()
+            concat_im_q = torch.cat([fused_im_q, negative_im_q], 0)
+            concat_logits = self.negative_classifier(concat_im_q)
+            aux_loss = torch.nn.functional.cross_entropy(concat_logits, concat_labels)
+            metrics['negative_classifier_accuracy'] = (torch.argmax(concat_logits, 1) == concat_labels).float().mean(0)
+            metrics['aux_loss'] = aux_loss
+        else:
+            aux_loss = 0
+            metrics['negative_classifier_accuracy'] = 0
+            metrics['aux_loss'] = aux_loss
+
+        q = self.encoder_q(fused_im_q)  # queries: NxC
         q = nn.functional.normalize(q, dim=1)
 
         # compute key features
         with torch.no_grad():  # no gradient to keys
             self._momentum_update_key_encoder()  # update the key encoder
-            k = self.encoder_k(im_k)  # keys: NxC
+            k = self.encoder_k(fused_im_k)  # keys: NxC
             k = nn.functional.normalize(k, dim=1)
 
         # compute logits
@@ -348,6 +408,6 @@ class MoCo_with_SMILE(nn.Module):
         # dequeue and enqueue
         self._dequeue_and_enqueue(k, ec_numbers)
         if ec_numbers is None:
-            return logits, labels
+            return logits, labels, aux_loss, metrics
         else:
-            return logits, labels, self.ec_number_labels
+            return logits, labels, aux_loss, metrics, self.ec_number_labels

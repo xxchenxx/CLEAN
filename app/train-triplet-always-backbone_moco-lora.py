@@ -84,6 +84,7 @@ def parse():
     parser.add_argument('--esm-model', type=str, default='esm1b_t33_650M_UR50S.pt')
     parser.add_argument('--esm-model-dim', type=int, default=1280)
     parser.add_argument('--repr-layer', type=int, default=33)
+    parser.add_argument('--lora-rank', type=int, default=16)
     args = parser.parse_args()
     return args
 
@@ -270,7 +271,7 @@ def main():
     
 
     esm_model, alphabet = pretrained.load_model_and_alphabet(
-        args.esm_model, use_lora=True, lora_rank=16)
+        args.esm_model, use_lora=True, lora_rank=args.lora_rank)
     esm_model = esm_model.to(device)
 
     batch_converter = alphabet.get_batch_converter()
@@ -287,8 +288,9 @@ def main():
             parameters.append(p)
         else:
             p.requires_grad = False
+
     print(parameters)
-    esm_optimizer = torch.optim.AdamW(parameters, lr=1e-4, betas=(0.9, 0.999))
+    esm_optimizer = torch.optim.AdamW(parameters, lr=1e-5, betas=(0.9, 0.999))
     criterion = nn.CrossEntropyLoss().to(device)    
     best_loss = float('inf')
 
@@ -363,67 +365,32 @@ def main():
 
             
         if epoch % args.evaluate_freq == 0:
-            dataset = FastaBatchedDataset.from_file(
-                    './data/' + args.training_data + '.fasta')
-            batches = dataset.get_batch_indices(
-                4096, extra_toks_per_seq=1)
-            data_loader = torch.utils.data.DataLoader(
-                dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
-            )
-            with torch.no_grad():
-                for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-                    print(
-                        f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
-                    )
-                    toks = toks.to(device="cuda", non_blocking=True)
-                    out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
-                    representations = {
-                        layer: t.to(device="cpu") for layer, t in out["representations"].items()
-                    }
-                    batch_lens = (toks != alphabet.padding_idx).sum(1)
-
-                    for i, label in enumerate(labels):
-                        tokens_len = batch_lens[i]
-                        out = {
-                            layer: t[i, 1 : tokens_len - 1].clone()
-                            for layer, t in representations.items()
-                        }
-                        if not args.use_extra_attention:
-                            new_esm_emb[label] = out[args.repr_layer].mean(0)
-                        else:
-                            q = query(out[args.repr_layer].cuda())
-                            if learnable_k is None:
-                                k = key(out[args.repr_layer].cuda())
-                            else:
-                                k = key(learnable_k)
-                            if args.use_top_k:
-                                raw = k @ q.transpose(0, 1) / np.sqrt(64)
-                                
-                                shape = raw.shape
-                                raw = raw.reshape(-1, raw.shape[-1])
-                                _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                                smallest = torch.zeros_like(raw)
-                                for i in range(len(raw)):
-                                    smallest[i, smallest_value[i]] = 1
-                                smallest = smallest.reshape(shape).bool()
-                                raw = raw.reshape(shape)
-                                raw[smallest] = raw[smallest] + float('-inf')
-                                prob = torch.softmax(raw, -1) # N x 1
-                            elif args.use_top_k_sum:
-                                raw = k @ q.transpose(0, 1) / np.sqrt(64)
-                                weights = raw.sum(-2, keepdim=True)
-                                prob = torch.softmax(weights, -1)
-                            else:
-                                prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
-                            new_esm_emb[label] = (prob @ out[args.repr_layer].cuda()).sum(0)
+            if smile_embed is None:
+                smile_embed = torch.load("Rhea_tensors.pt")
+                rhea_map = pd.read_csv("rhea2ec.tsv", sep='\t')   
             train_esm_emb = []
                 # for ec in tqdm(list(ec_id_dict.keys())):
             for ec in list(ec_id_dict.keys()):
                 ids_for_query = list(ec_id_dict[ec])
                 esm_to_cat = [new_esm_emb[id] for id in ids_for_query]
                 train_esm_emb = train_esm_emb + esm_to_cat
-            train_esm_emb = torch.stack(train_esm_emb).to(device=device, dtype=dtype)
 
+            smile_embeds_ec = []
+            for ec in list(ec_id_dict.keys()):
+                ids_for_query = list(ec_id_dict[ec])
+                try:
+                    rhea_id = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values[0]
+                except:
+                    rhea_id = -1
+                try:
+                    smile_embed_ec = [smile_embed[str(rhea_id)][1] for _ in ids_for_query]
+                except:
+                    smile_embed_ec = [torch.zeros_like(next(iter(smile_embed.items()))[1][0]) for _ in ids_for_query] 
+                
+                smile_embeds_ec += smile_embed_ec
+            train_smile_embed = torch.stack(smile_embeds_ec)
+            train_esm_emb = torch.stack(train_esm_emb).to(device=device, dtype=dtype)
+            
             dataset = FastaBatchedDataset.from_file(
                 './data/price.fasta')
             batches = dataset.get_batch_indices(
@@ -443,53 +410,98 @@ def main():
                         layer: t.to(device="cpu") for layer, t in out["representations"].items()
                     }
                     batch_lens = (toks != alphabet.padding_idx).sum(1)
-
+                    
                     for i, label in enumerate(labels):
-                        token_lens = batch_lens[i]
-                        out = {
-                            layer: t[i, 1 : token_lens - 1].clone()
+                        
+                        temp = {
+                            layer: t[i, 1 : batch_lens[i] - 1].clone()
                             for layer, t in representations.items()
                         }
+                        feature = temp[args.repr_layer].cuda()
                         if not args.use_extra_attention:
-                            test_emb[label] = out[args.repr_layer].cuda().mean(0)
+                            test_emb[label] = feature.mean(0)
                         else:
-                            q = query(out[args.repr_layer].cuda())
+                            q = query(feature)
                             if learnable_k is None:
-                                k = key(out[args.repr_layer].cuda())
+                                k = key(feature)
+                            elif args.use_input_as_k:
+                                k = key(feature.mean(1, keepdim=True))
                             else:
                                 k = key(learnable_k)
                             if args.use_top_k:
-                                raw = k @ q.transpose(0, 1) / np.sqrt(64)
+                                raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
                                 
                                 shape = raw.shape
                                 raw = raw.reshape(-1, raw.shape[-1])
                                 _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
                                 smallest = torch.zeros_like(raw)
-                                for i in range(len(raw)):
-                                    smallest[i, smallest_value[i]] = 1
+                                for j in range(len(raw)):
+                                    smallest[j, smallest_value[j]] = 1
                                 smallest = smallest.reshape(shape).bool()
                                 raw = raw.reshape(shape)
                                 raw[smallest] = raw[smallest] + float('-inf')
                                 prob = torch.softmax(raw, -1) # N x 1
                             elif args.use_top_k_sum:
-                                raw = k @ q.transpose(0, 1) / np.sqrt(64)
+                                raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
                                 weights = raw.sum(-2, keepdim=True)
                                 prob = torch.softmax(weights, -1)
                             else:
-                                prob = torch.softmax(k @ q.transpose(0, 1) / np.sqrt(64), 1) # N x 1
-                            test_emb[label] = (prob @ out[args.repr_layer].cuda()).sum(0)
-            test_esm_emb = []
-            id_ec_test, ec_id_dict_test = get_ec_id_dict('./data/price.csv')
-            ids_for_query = list(id_ec_test.keys())
-            esm_to_cat = [test_emb[id] for id in ids_for_query]
+                                prob = torch.softmax(torch.einsum('jk,lk->jl', k, q) / np.sqrt(64), 1) # N x 1
+                            test_emb[label] = (prob @ feature).sum(0)
+            oracle = False
+
+            if True:
+                train_smile_embed = train_smile_embed.to(train_esm_emb.device).mean(1)
+                train_esm_emb = model.encoder_q(model.fuser([train_esm_emb, model.proj(train_smile_embed)]))
+                cluster_center_model = get_cluster_center(
+                    train_esm_emb, ec_id_dict)
+                total_ec_n, out_dim = len(ec_id_dict.keys()), train_esm_emb.size(1)
+                model_lookup = torch.zeros(total_ec_n, out_dim, device=device, dtype=dtype)
+                ecs = list(cluster_center_model.keys())
+                id_ec_test, ec_id_dict_test = get_ec_id_dict('./data/price.csv')
+                ids_for_query = list(id_ec_test.keys())
+                esm_to_cat = [test_emb[id] for id in ids_for_query]
+                test_esm_emb = torch.stack(esm_to_cat)
+
+                for i, ec in enumerate(ecs):
+                    model_lookup[i] = cluster_center_model[ec]
                 
-            test_esm_emb = torch.stack(esm_to_cat)
-            train_esm_emb = model.encoder_q(train_esm_emb)
-            test_esm_emb = model.encoder_q(test_esm_emb)
-            eval_dist = get_dist_map_test(train_esm_emb, test_esm_emb, ec_id_dict, id_ec_test, device, dtype)
-            eval_df = pd.DataFrame.from_dict(eval_dist)
-            out_filename = "results/price_temp" 
-            write_max_sep_choices(eval_df, out_filename, gmm=None)
+                ids = list(id_ec_test.keys())
+                dist = {}
+                for ec in tqdm(list(ec_id_dict.keys())):
+                    rhea_ids = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values
+                   
+                    smile_embeds = []
+                    for rhea_id in rhea_ids:
+                        try:
+                            smile_embeds.extend(smile_embed[str(rhea_id)])
+                        except:
+                            pass
+                    if len(smile_embeds) == 0:
+                        smile_embeds = [torch.zeros_like(next(iter(smile_embed.items()))[1][1])]
+
+                    current_smile_embeds = [smile_embed_ec.unsqueeze(0).repeat(test_esm_emb.shape[0], 1, 1).cuda().mean(1) for smile_embed_ec in smile_embeds]
+                    # print(current_smile_embed.shape)
+
+                    test_esm_emb_i = [model.encoder_q(model.fuser([test_esm_emb, model.proj(current_smile_embed)])) for current_smile_embed in current_smile_embeds]
+
+                    # eval_dist = dist_map_helper(ids, test_esm_emb, ecs, model_lookup)
+                    
+                    for i, key1 in tqdm(enumerate(ids)):
+                        dist_norm = [(test_esm_emb_i[j][i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2) for j in range(len(current_smile_embeds))]
+                        dist_norm = torch.stack(dist_norm).mean(0).detach().cpu().numpy()
+                        # print(dist_norm)
+                        if key1 not in dist:
+                            dist[key1] = {}
+                        dist[key1][ec] = dist_norm
+                    
+                eval_dist = dist
+                eval_df = pd.DataFrame.from_dict(eval_dist)
+                eval_df = eval_df.astype(float)
+                out_filename = "results/price_temp" 
+                write_max_sep_choices(eval_df, out_filename, gmm=None)
+                    
+                
             
             if True:
                 pred_label = get_pred_labels(out_filename, pred_type='_maxsep')

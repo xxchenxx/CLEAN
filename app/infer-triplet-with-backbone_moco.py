@@ -192,7 +192,7 @@ def main():
     )
     probs = {}
     for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-        if batch_idx > 50: break
+        if batch_idx > 100: break
         print(
             f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
         )
@@ -241,20 +241,39 @@ def main():
     print(probs)
     ec = pd.read_csv("data/training_data_10_parsed.csv", sep=',')
     result = {}
+    import matplotlib.pyplot as plt
     f = open("split10_result.json", "w")
     for label in probs:
         prob_sum = torch.sum(probs[label], 0)
-        important = torch.argsort(prob_sum, 0, descending=True)
+        important = torch.argsort(prob_sum, 0, descending=True)[:64]
         ec_number = ec.loc[ec['UniprotID'] == label, 'EC number'].iloc[0]
         pdb = ec.loc[ec['UniprotID'] == label, 'parsed_PDB'].iloc[0]
         if 'AF' in pdb:
             pdb_list = pdb.split(";")
             for pdb in pdb_list:
                 print(pdb)
-                values = open("/mnt/vita-nas/xuxi/")
-            assert False
+                values = list(map(lambda x: float(x.strip()), open(f"/mnt/vita-nas/xuxi/predicted_active_sites/{pdb}-predictions.txt", "r").readlines()))
+                values = np.array(values)
+                order = np.argsort(-values)[:min(40, int(len(values) * 0.4))]
+
+                prob_sum = prob_sum.detach().numpy()
+                mask = np.zeros_like(prob_sum)
+                mask[important] = True
+                prob_sum[(prob_sum > 0).astype(bool) & mask.astype(bool)] = 1
+                plt.figure(figsize=(10, 10))
+                plt.subplot(3, 1, 1)
+                bin_mask = np.zeros_like(values)
+                bin_mask[order] = 1
+                print(bin_mask)
+                plt.imshow(values.reshape(1, -1), aspect='auto')
+                plt.subplot(3, 1, 2)
+                plt.imshow(prob_sum.reshape(1, -1), aspect='auto')
+                plt.subplot(3, 1, 3)
+                plt.imshow(bin_mask.reshape(1, -1), aspect='auto')
+                plt.savefig(f"vis/{label}.png")
+                plt.close()
+                # assert False
         line = {"label": label, 'EC number': ec_number, "position": str(list(important[:10].detach().cpu().numpy() + 1))}
-        print(line)
         f.write(json.dumps(line)+'\n')
     torch.save(probs, 'split10_probs.pth')
 if __name__ == '__main__':

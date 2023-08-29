@@ -8,7 +8,25 @@ import numpy as np
 import subprocess
 import pickle
 from .distance_map import get_dist_map
+import logging
 
+
+def get_logger(name=__name__, level=logging.INFO) -> logging.Logger:
+    """Initializes multi-GPU-friendly python logger."""
+    formatter = logging.Formatter('[%(asctime)s] [%(module)s.%(funcName)s.%(lineno)d] [%(levelname)s] %(message)s')
+    handler = logging.StreamHandler()
+    handler.setLevel(level)
+    handler.setFormatter(formatter)
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.addHandler(handler)
+    # this ensures all logging levels get marked with the rank zero decorator
+    # otherwise logs would get multiplied for each GPU process in multi-GPU setup
+    # for level in ("debug", "info", "warning", "error", "exception", "fatal", "critical"):
+    #     setattr(logger, level, rank_zero_only(getattr(logger, level)))
+
+    return logger
+    
 def seed_everything(seed=1234):
     random.seed(seed)
     np.random.seed(seed)

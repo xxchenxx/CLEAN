@@ -388,7 +388,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             elif args.use_ranking_loss:
                 output, target = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
                 loss = criterion(output, target)
-                distances = torch.cdist(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
+                distances = torch.cdist(anchor.to(device=device, dtype=dtype), anchor.to(device=device, dtype=dtype))
                 
                 label_distances = torch.zeros_like(distances)
                 for i in range(len(output)):
