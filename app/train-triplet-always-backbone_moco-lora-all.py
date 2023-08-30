@@ -136,7 +136,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             for i in range(len(anchor_out)):
                 for j in range(i + 1, len(anchor_out)):
                     label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
-            m = torch.clamp(3 - label_distances * distances, min=0)
+            m = torch.clamp(20 - label_distances * distances, min=0)
             m = torch.triu(m, diagonal=1)
             loss_distance = torch.sum(m)
             loss += 1e-6 * loss_distance

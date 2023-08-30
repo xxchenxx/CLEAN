@@ -13,6 +13,7 @@ import argparse
 from CLEAN.distance_map import get_dist_map
 import torch
 import numpy as np
+import wandb
 from functools import partial
 
 from esm import FastaBatchedDataset, pretrained
@@ -70,14 +71,16 @@ def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/
     train_params = {
         'batch_size': 1,
         'shuffle': True,
-        'num_workers': 4,
+        'num_workers': 1,
+        'drop_last': True
     }
     ec_list = list(ec_id.keys())
     embed_params = {
         'batch_size': 100,
         'shuffle': True,
         'collate_fn': partial(custom_collate, ec_list=ec_list),
-        'num_workers': 4,
+        'num_workers': 1,
+        'drop_last': True
     }
     positive = mine_hard_positives(dist_map, 3)
     train_data = MoCo_dataset_with_mine_EC_and_SMILE(id_ec, ec_id, positive, with_ec_number=True, use_random_augmentation=args.use_random_augmentation, return_name=True, use_SMILE_cls_token=args.use_SMILE_cls_token)
@@ -137,15 +140,16 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             output, target, aux_loss, metrics = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
             loss = criterion(output, target)
             distances = torch.cdist(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
-            
+            metrics['distance_values'] = wandb.Histogram(distances.detach().cpu().numpy())
             label_distances = torch.zeros_like(distances)
             for i in range(len(output)):
                 for j in range(i + 1, len(output)):
                     label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
-            m = torch.clamp(3 - label_distances * distances, min=0)
+            m = torch.clamp(20 - label_distances * distances, min=0)
             m = torch.triu(m, diagonal=1)
             loss_distance = torch.sum(m)
             loss += 1e-6 * loss_distance
+            metrics['distance_loss'] = 1e-6 * loss_distance
         else:
             output, target, aux_loss, metrics = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
             loss = criterion(output, target)
