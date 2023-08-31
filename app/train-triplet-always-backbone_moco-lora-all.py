@@ -136,10 +136,10 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             for i in range(len(anchor_out)):
                 for j in range(i + 1, len(anchor_out)):
                     label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
-            m = torch.clamp(3 - label_distances * distances, min=0)
+            m = torch.clamp(20 - label_distances * distances, min=0)
             m = torch.triu(m, diagonal=1)
-            loss_distance = torch.sum(m)
-            loss += 1e-6 * loss_distance
+            loss_distance = args.distance_loss_coef * torch.sum(m)
+            loss += loss_distance
             metrics['distance_loss'] = 1e-6 * loss_distance
             loss = loss + aux_loss
             loss.backward()
@@ -208,9 +208,7 @@ def main():
     #======================== initialize model =================#
     model = MoCo_with_SMILE(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim, use_negative_smile=args.use_negative_smile).cuda()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01, betas=(0.9, 0.999))
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000, eta_min=0, last_epoch=-1, verbose=False)
-    
-
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=0, last_epoch=-1, verbose=False)
     criterion = nn.CrossEntropyLoss().to(device)    
     best_loss = float('inf')
 
@@ -337,11 +335,6 @@ def main():
             for i, ec in enumerate(ecs):
                 model_lookup[i] = cluster_center_model[ec]
 
-            
-            id_ec_test, ec_id_dict_test = get_ec_id_dict(f'./data/{eval_dataset}.csv')
-            ids_for_query = list(id_ec_test.keys())
-            test_esm_to_cat = [test_esm_emb[id] for id in ids_for_query]
-            test_esm_emb = torch.stack(test_esm_to_cat)
                 
             ids = list(id_ec_test.keys())
             dist = {}
@@ -356,15 +349,15 @@ def main():
                 if len(smile_embeds) == 0:
                     smile_embeds = torch.zeros((1, 384))
 
-                current_smile_embeds = [smile_embed_ec.unsqueeze(0).repeat(test_esm_emb.shape[0], 1, 1).cuda().mean(1) for smile_embed_ec in smile_embeds]
+                current_smile_embeds = [smile_embed_ec.unsqueeze(0).repeat(test_protein_emb.shape[0], 1, 1).cuda().mean(1) for smile_embed_ec in smile_embeds]
                 # print(current_smile_embed.shape)
 
-                test_esm_emb_i = [model.encoder_q(model.fuser(test_esm_emb, current_smile_embed)) for current_smile_embed in current_smile_embeds]
+                test_protein_emb_i = [model.encoder_q(model.fuser(test_protein_emb, current_smile_embed)) for current_smile_embed in current_smile_embeds]
 
                 # eval_dist = dist_map_helper(ids, test_esm_emb, ecs, model_lookup)
                 
                 for i, key1 in enumerate(ids):
-                    dist_norm = [(test_esm_emb_i[j][i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2) for j in range(len(current_smile_embeds))]
+                    dist_norm = [(test_protein_emb_i[j][i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2) for j in range(len(current_smile_embeds))]
                     dist_norm = torch.stack(dist_norm).mean(0).detach().cpu().numpy()
                     # print(dist_norm)
                     if key1 not in dist:

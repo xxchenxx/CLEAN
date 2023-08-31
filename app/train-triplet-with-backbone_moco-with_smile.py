@@ -22,7 +22,7 @@ from utils import save_state_dicts, get_logger, \
     get_attention_modules, parse_args, calculate_distance_matrix_for_ecs
 
 from model_utils import forward_attentions, generate_from_file
-
+import wandb
 from torch.nn.utils.rnn import pad_sequence
 logger = get_logger(__name__)
 
@@ -137,7 +137,8 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             output, target, aux_loss, metrics = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
             loss = criterion(output, target)
             distances = torch.cdist(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
-            
+            distance_values = distances.detach().cpu().numpy()
+            metrics['distance_values'] = wandb.Histogram(distance_values)
             label_distances = torch.zeros_like(distances)
             for i in range(len(output)):
                 for j in range(i + 1, len(output)):
@@ -145,6 +146,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             m = torch.clamp(3 - label_distances * distances, min=0)
             m = torch.triu(m, diagonal=1)
             loss_distance = torch.sum(m)
+            metrics['loss_distance'] = loss_distance.item()
             loss += 1e-6 * loss_distance
         else:
             output, target, aux_loss, metrics = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
