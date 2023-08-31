@@ -69,18 +69,16 @@ def custom_collate(data, ec_list): #(2)
 
 def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/"):
     train_params = {
-        'batch_size': 1,
+        'batch_size': args.batch_size,
         'shuffle': True,
-        'num_workers': 1,
-        'drop_last': True
+        'num_workers': 4,
     }
     ec_list = list(ec_id.keys())
     embed_params = {
-        'batch_size': 100,
+        'batch_size': args.batch_size,
         'shuffle': True,
         'collate_fn': partial(custom_collate, ec_list=ec_list),
-        'num_workers': 1,
-        'drop_last': True
+        'num_workers': 4,
     }
     positive = mine_hard_positives(dist_map, 3)
     train_data = MoCo_dataset_with_mine_EC_and_SMILE(id_ec, ec_id, positive, with_ec_number=True, use_random_augmentation=args.use_random_augmentation, return_name=True, use_SMILE_cls_token=args.use_SMILE_cls_token)
@@ -148,8 +146,8 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             m = torch.clamp(20 - label_distances * distances, min=0)
             m = torch.triu(m, diagonal=1)
             loss_distance = torch.sum(m)
-            loss += 1e-6 * loss_distance
-            metrics['distance_loss'] = 1e-6 * loss_distance
+            loss += args.distance_loss_coef * loss_distance
+            metrics['distance_loss'] = args.distance_loss_coef * loss_distance
         else:
             output, target, aux_loss, metrics = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
             loss = criterion(output, target)
@@ -185,7 +183,7 @@ def main():
         torch.backends.cudnn.benchmark = False
     else:
         torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.benchmark = True
+
     id_ec, ec_id_dict = get_ec_id_dict('./data/' + args.training_data + '.csv')
     ec_id = {key: list(ec_id_dict[key]) for key in ec_id_dict.keys()}
     score_matrix = calculate_distance_matrix_for_ecs(ec_id_dict)
@@ -350,98 +348,99 @@ def main():
             cluster_center_model = get_cluster_center(
                 train_esm_emb, ec_id_dict)
             # test embedding construction
-            eval_dataset = 'price'
-            dataset = FastaBatchedDataset.from_file(
-                f'./data/{eval_dataset}.fasta')
-            batches = dataset.get_batch_indices(
-                4096, extra_toks_per_seq=1)
-            data_loader = torch.utils.data.DataLoader(
-                dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
-            )
+            for eval_dataset in ['price', 'new', 'halogenase']:
+                dataset = FastaBatchedDataset.from_file(
+                    f'./data/{eval_dataset}.fasta')
+                batches = dataset.get_batch_indices(
+                    4096, extra_toks_per_seq=1)
+                data_loader = torch.utils.data.DataLoader(
+                    dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
+                )
 
-            test_protein_emb = {}
-            with torch.no_grad():
-                for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-                    if batch_idx % 100 == 0:
-                        logger.info(
-                            f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
-                        )
-                    toks = toks.to(device="cuda", non_blocking=True)
-                    out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
-                    representations = {
-                        layer: t.to(device="cpu") for layer, t in out["representations"].items()
-                    }
-                    batch_lens = (toks != alphabet.padding_idx).sum(1)
-                    
-                    for i, label in enumerate(labels):
-                        temp = {
-                            layer: t[i, 1 : batch_lens[i] - 1].clone()
-                            for layer, t in representations.items()
+                test_protein_emb = {}
+                with torch.no_grad():
+                    for batch_idx, (labels, strs, toks) in enumerate(data_loader):
+                        if batch_idx % 100 == 0:
+                            logger.info(
+                                f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
+                            )
+                        toks = toks.to(device="cuda", non_blocking=True)
+                        out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
+                        representations = {
+                            layer: t.to(device="cpu") for layer, t in out["representations"].items()
                         }
-                        feature = temp[args.repr_layer].cuda()
-                        test_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args)
-            
-            
-            total_ec_n, out_dim = len(ec_id_dict.keys()), train_esm_emb.size(1)
-            model_lookup = torch.zeros(total_ec_n, out_dim, device=device, dtype=dtype)
-            ecs = list(cluster_center_model.keys())
-            id_ec_test, ec_id_dict_test = get_ec_id_dict(f'./data/{eval_dataset}.csv')
-            ids_for_query = list(id_ec_test.keys())
-            test_protein_emb_to_cat = [test_protein_emb[id] for id in ids_for_query]
-            test_protein_emb = torch.stack(test_protein_emb_to_cat)
-
-            for i, ec in enumerate(ecs):
-                model_lookup[i] = cluster_center_model[ec]
-            
-            ids = list(id_ec_test.keys())
-            dist = {}
-            for ec in tqdm(list(ec_id_dict.keys())):
-                rhea_ids = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values
-                smile_embeds = []
-                for rhea_id in rhea_ids:
-                    try:
-                        smile_embeds.extend(smile_embed[str(rhea_id)])
-                    except:
-                        pass
-                if len(smile_embeds) == 0:
-                    smile_embeds = torch.zeros((1, 384))
-
-                current_smile_embeds = [smile_embed_ec.unsqueeze(0).repeat(test_protein_emb.shape[0], 1, 1).cuda().mean(1) for smile_embed_ec in smile_embeds]
-                # print(current_smile_embed.shape)
-
-                test_protein_emb_i = [model.encoder_q(model.fuser(test_protein_emb, current_smile_embed)) for current_smile_embed in current_smile_embeds]
-
-                # eval_dist = dist_map_helper(ids, test_protein_emb, ecs, model_lookup)
+                        batch_lens = (toks != alphabet.padding_idx).sum(1)
+                        
+                        for i, label in enumerate(labels):
+                            temp = {
+                                layer: t[i, 1 : batch_lens[i] - 1].clone()
+                                for layer, t in representations.items()
+                            }
+                            feature = temp[args.repr_layer].cuda()
+                            test_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args)
                 
-                for i, key1 in enumerate(ids):
-                    dist_norm = [(test_protein_emb_i[j][i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2) for j in range(len(current_smile_embeds))]
-                    dist_norm = torch.stack(dist_norm).mean(0).detach().cpu().numpy()
-                    # print(dist_norm)
-                    if key1 not in dist:
-                        dist[key1] = {}
-                    dist[key1][ec] = dist_norm
                 
-            eval_dist = dist
-            eval_df = pd.DataFrame.from_dict(eval_dist)
-            eval_df = eval_df.astype(float)
-            out_filename = f"results/{eval_dataset}_{args.model_name}" 
-            write_max_sep_choices(eval_df, out_filename, gmm=None)
-            
-            pred_label = get_pred_labels(out_filename, pred_type='_maxsep')
-            pred_probs = get_pred_probs(out_filename, pred_type='_maxsep')
-            true_label, all_label = get_true_labels(f'./data/{eval_dataset}')
-            try:
-                pre, rec, f1, roc, acc = get_eval_metrics(
-                    pred_label, pred_probs, true_label, all_label)
+                total_ec_n, out_dim = len(ec_id_dict.keys()), train_esm_emb.size(1)
+                model_lookup = torch.zeros(total_ec_n, out_dim, device=device, dtype=dtype)
+                ecs = list(cluster_center_model.keys())
+                id_ec_test, ec_id_dict_test = get_ec_id_dict(f'./data/{eval_dataset}.csv')
+                ids_for_query = list(id_ec_test.keys())
+                test_protein_emb_to_cat = [test_protein_emb[id] for id in ids_for_query]
+                test_protein_emb = torch.stack(test_protein_emb_to_cat)
 
-                logger.info(f'total samples: {len(true_label)} | total ec: {len(all_label)}')
-                logger.info(f'precision: {pre:.3} | recall: {rec:.3} | F1: {f1:.3} | AUC: {roc:.3} ')
-                wandb_logger.log({f'eval/{eval_dataset}/precision': pre, 
-                                f'eval/{eval_dataset}/recall': rec,
-                                f'eval/{eval_dataset}/F1': f1,
-                                f'eval/{eval_dataset}/AUC': roc})
-            except:
-                pass
+                for i, ec in enumerate(ecs):
+                    model_lookup[i] = cluster_center_model[ec]
+                
+                ids = list(id_ec_test.keys())
+                dist = {}
+                for ec in tqdm(list(ec_id_dict.keys())):
+                    rhea_ids = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values
+                    smile_embeds = []
+                    for rhea_id in rhea_ids:
+                        try:
+                            smile_embeds.extend(smile_embed[str(rhea_id)])
+                        except:
+                            pass
+                    if len(smile_embeds) == 0:
+                        smile_embeds = torch.zeros((1, 384))
+
+                    current_smile_embeds = [smile_embed_ec.unsqueeze(0).repeat(test_protein_emb.shape[0], 1, 1).cuda().mean(1) for smile_embed_ec in smile_embeds]
+                    # print(current_smile_embed.shape)
+
+                    test_protein_emb_i = [model.encoder_q(model.fuser(test_protein_emb, current_smile_embed)) for current_smile_embed in current_smile_embeds]
+
+                    # eval_dist = dist_map_helper(ids, test_protein_emb, ecs, model_lookup)
+                    
+                    for i, key1 in enumerate(ids):
+                        dist_norm = [(test_protein_emb_i[j][i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2) for j in range(len(current_smile_embeds))]
+                        dist_norm = torch.stack(dist_norm).mean(0).detach().cpu().numpy()
+                        # print(dist_norm)
+                        if key1 not in dist:
+                            dist[key1] = {}
+                        dist[key1][ec] = dist_norm
+                    
+                eval_dist = dist
+                eval_df = pd.DataFrame.from_dict(eval_dist)
+                eval_df = eval_df.astype(float)
+                out_filename = f"results/{eval_dataset}_{args.model_name}" 
+                write_max_sep_choices(eval_df, out_filename, gmm=None)
+                
+                pred_label = get_pred_labels(out_filename, pred_type='_maxsep')
+                pred_probs = get_pred_probs(out_filename, pred_type='_maxsep')
+                true_label, all_label = get_true_labels(f'./data/{eval_dataset}')
+                try:
+                    pre, rec, f1, roc, acc = get_eval_metrics(
+                        pred_label, pred_probs, true_label, all_label)
+
+                    logger.info(f'total samples: {len(true_label)} | total ec: {len(all_label)}')
+                    logger.info(f'precision: {pre:.3} | recall: {rec:.3} | F1: {f1:.3} | AUC: {roc:.3} ')
+                    wandb_logger.log({f'eval/{eval_dataset}/precision': pre, 
+                                    f'eval/{eval_dataset}/recall': rec,
+                                    f'eval/{eval_dataset}/F1': f1,
+                                    f'eval/{eval_dataset}/AUC': roc,
+                                    f'eval/{eval_dataset}/acc': acc})
+                except:
+                    pass
 
 
         # assert False

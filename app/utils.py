@@ -139,7 +139,10 @@ def parse_args():
 
     if args.wandb_name is None:
         args.wandb_name = args.model_name
-        
+    import time  
+
+    time_stamp = time.time()
+    args.model_name =  f"{args.model_name}_{time_stamp}"
     if args.no_wandb:
         return args, Dummy()
     else:

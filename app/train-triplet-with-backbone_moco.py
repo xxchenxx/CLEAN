@@ -180,7 +180,6 @@ def main():
         torch.backends.cudnn.benchmark = False
     else:
         torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.benchmark = False
     id_ec, ec_id_dict = get_ec_id_dict('./data/' + args.training_data + '.csv')
     ec_id = {key: list(ec_id_dict[key]) for key in ec_id_dict.keys()}
     score_matrix = calculate_distance_matrix_for_ecs(ec_id_dict)
