@@ -178,9 +178,13 @@ def train(model, args, epoch, train_loader, static_embed_loader,
     return total_loss/(batch + 1)
 
 def main():
-    seed_everything()
     ensure_dirs('./data/model')
     args, wandb_logger = parse_args()
+    if args.seed is not None:
+        seed_everything(args.seed)
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.benchmark = True
     id_ec, ec_id_dict = get_ec_id_dict('./data/' + args.training_data + '.csv')
     ec_id = {key: list(ec_id_dict[key]) for key in ec_id_dict.keys()}
@@ -213,7 +217,7 @@ def main():
     #======================== initialize model =================#
     model = MoCo_with_SMILE(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim, use_negative_smile=args.use_negative_smile).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01, betas=(0.9, 0.999))
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000, eta_min=0, last_epoch=-1, verbose=False)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=0, last_epoch=-1, verbose=False)
     esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
     criterion = nn.CrossEntropyLoss().to(device)    
     ec_number_classifier = nn.Sequential(nn.Linear(args.esm_model_dim, 128), nn.ReLU(), nn.Linear(128, len(ec_id.keys()))).cuda()

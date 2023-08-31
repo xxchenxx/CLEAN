@@ -214,7 +214,8 @@ class MoCo_dataset_with_mine_EC_text(torch.utils.data.Dataset):
 
 class MoCo_dataset_with_mine_EC(torch.utils.data.Dataset):
 
-    def __init__(self, id_ec, ec_id, mine_pos, path='data/esm_data/', with_ec_number=False):
+    def __init__(self, id_ec, ec_id, mine_pos, path='data/esm_data/', 
+                 with_ec_number=False, return_name = False, **kwargs) :
         self.id_ec = id_ec
         self.ec_id = ec_id
         self.full_list = []
@@ -225,6 +226,8 @@ class MoCo_dataset_with_mine_EC(torch.utils.data.Dataset):
             if '-' not in ec:
                 self.full_list.append(ec)
 
+        self.return_name = return_name
+
     def __len__(self):
         return len(self.full_list)
 
@@ -232,12 +235,15 @@ class MoCo_dataset_with_mine_EC(torch.utils.data.Dataset):
         anchor_ec = self.full_list[index]
         anchor = random.choice(self.ec_id[anchor_ec])
         pos = random_positive(anchor, self.id_ec, self.ec_id)
-        a = torch.load(f'{self.path}/' + anchor + '.pt')
-        p = torch.load(f'{self.path}/' + pos + '.pt')
+
+        if not self.return_name:
+            anchor = format_esm(torch.load(f'{self.path}/' + anchor + '.pt'))
+            pos = format_esm(torch.load(f'{self.path}/' + pos + '.pt'))
+        
         if self.with_ec_number:
-            return format_esm(a), format_esm(p), anchor_ec
+            return anchor, pos, anchor_ec
         else:
-            return format_esm(a), format_esm(p)
+            return anchor, pos
     
 
 
