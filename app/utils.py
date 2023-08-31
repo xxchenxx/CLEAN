@@ -115,6 +115,8 @@ def parse_args():
     parser.add_argument('-o', '--out_dim', type=int, default=128)
     parser.add_argument('--adaptive_rate', type=int, default=100)
     parser.add_argument('--train_esm_rate', type=int, default=100)
+    parser.add_argument('--seed', type=int, default=None)
+    parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--use_extra_attention', action="store_true")
     parser.add_argument('--use_top_k', action="store_true")
     parser.add_argument('--use_top_k_sum', action="store_true")
@@ -141,7 +143,10 @@ def parse_args():
 
     if args.wandb_name is None:
         args.wandb_name = args.model_name
-        
+    import time  
+
+    time_stamp = time.time()
+    args.model_name =  f"{args.model_name}_{time_stamp}"
     if args.no_wandb:
         return args, Dummy()
     else:

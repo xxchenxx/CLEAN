@@ -13,12 +13,19 @@ import argparse
 from CLEAN.distance_map import get_dist_map
 import torch
 import numpy as np
+import wandb
 from functools import partial
 
-from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
+from esm import FastaBatchedDataset, pretrained
 from Bio import SeqIO
-from torch.distributed.pipeline.sync import Pipe
-from torch.distributed.pipeline.sync.utils import partition_model
+
+from utils import save_state_dicts, get_logger, \
+    get_attention_modules, parse_args, calculate_distance_matrix_for_ecs
+
+from model_utils import forward_attentions, generate_from_file
+
+from torch.nn.utils.rnn import pad_sequence
+logger = get_logger(__name__)
 
 def mine_hard_positives(dist_map, knn=10):
     #print("The number of unique EC numbers: ", len(dist_map.keys()))
@@ -33,69 +40,12 @@ def mine_hard_positives(dist_map, knn=10):
         }
     return positives
         
-def generate_from_file(file, alphabet, esm_model, args, start_epoch=1):
-    dataset = FastaBatchedDataset.from_file(file)
-    batches = dataset.get_batch_indices(
-            4096, extra_toks_per_seq=1)
-    data_loader = torch.utils.data.DataLoader(
-        dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
-    )
-    os.makedirs(args.temp_esm_path + f"/epoch{start_epoch}", exist_ok=True)
-    new_esm_emb = {}
-    with torch.no_grad():
-        for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-                print(
-                    f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
-                )
-                toks = toks.to(device="cuda", non_blocking=True)
-                out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
-                representations = {
-                    layer: t.to(device="cpu") for layer, t in out["representations"].items()
-                }
-                batch_lens = (toks != alphabet.padding_idx).sum(1)
-                
-                for i, label in enumerate(labels):
-                    out = {
-                        layer: t[i, 1 : batch_lens[i] - 1].clone()
-                        for layer, t in representations.items()
-                    }
-                    torch.save(out[args.repr_layer], args.temp_esm_path + f"/epoch{start_epoch}/" + label + ".pt")
-                    new_esm_emb[label] = out[args.repr_layer].mean(0).cpu()
-    return new_esm_emb
-
-def parse():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-l', '--learning_rate', type=float, default=5e-4)
-    parser.add_argument('-e', '--epoch', type=int, default=2000)
-    parser.add_argument('-n', '--model_name', type=str, default='split10_triplet')
-    parser.add_argument('-t', '--training_data', type=str, default='split10')
-    parser.add_argument('-d', '--hidden_dim', type=int, default=512)
-    parser.add_argument('-o', '--out_dim', type=int, default=128)
-    parser.add_argument('--adaptive_rate', type=int, default=100)
-    parser.add_argument('--train_esm_rate', type=int, default=100)
-    parser.add_argument('--verbose', type=bool, default=False)
-    parser.add_argument('--use_extra_attention', action="store_true")
-    parser.add_argument('--use_top_k', action="store_true")
-    parser.add_argument('--use_top_k_sum', action="store_true")
-    parser.add_argument('--use_learnable_k', action="store_true")
-    parser.add_argument('--use_input_as_k', action="store_true")
-    parser.add_argument('--temp_esm_path', type=str, required=True)
-    parser.add_argument('--evaluate_freq', type=int, default=50)
-    parser.add_argument('--esm-model', type=str, default='esm1b_t33_650M_UR50S.pt')
-    parser.add_argument('--esm-model-dim', type=int, default=1280)
-    parser.add_argument('--repr-layer', type=int, default=33)
-    args = parser.parse_args()
-    return args
-
-from torch.nn.utils.rnn import pad_sequence
-
 def custom_collate(data, ec_list): #(2)
     anchor = [d[0] for d in data]
     positive = [d[1] for d in data]
     ec_numbers = [ec_list.index(d[2]) for d in data]
     anchor_length = torch.tensor(list(map(len, anchor)))
     positive_length = torch.tensor(list(map(len, positive)))
-
     anchor = pad_sequence(anchor, batch_first=True)
     positive = pad_sequence(positive, batch_first=True)
     anchor_attn_mask = torch.ones(anchor.shape[0], anchor.shape[1], anchor.shape[1]) * -np.inf
@@ -115,264 +65,126 @@ def custom_collate(data, ec_list): #(2)
 
 def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/"):
     train_params = {
-        'batch_size': 1,
+        'batch_size': args.batch_size,
         'shuffle': True,
+        'num_workers': 1,
+        'drop_last': True
     }
     ec_list = list(ec_id.keys())
     embed_params = {
-        'batch_size': 100,
+        'batch_size': args.batch_size,
         'shuffle': True,
-        'collate_fn': partial(custom_collate, ec_list=ec_list)
+        'collate_fn': partial(custom_collate, ec_list=ec_list),
+        'num_workers': 1,
+        'drop_last': True
     }
     positive = mine_hard_positives(dist_map, 3)
-    train_data = MoCo_dataset_with_mine_EC_text(id_ec, ec_id, positive, with_ec_number=True)
+    train_data = MoCo_dataset_with_mine_EC(id_ec, ec_id, positive, with_ec_number=True, return_name=True)
     train_embed = MoCo_dataset_with_mine_EC(id_ec, ec_id, positive, path=temp_esm_path, with_ec_number=True)
     train_loader = torch.utils.data.DataLoader(train_data, **train_params)
     static_embed_loader = torch.utils.data.DataLoader(train_embed, **embed_params)
     return train_loader, static_embed_loader
 
 def train(model, args, epoch, train_loader, static_embed_loader,
-          optimizer, device, dtype, criterion, esm_model, esm_optimizer, seq_dict, batch_converter, alphabet, attentions, attentions_optimizer=None, learnable_k=None, ec_number_classifier=None, ec_classifier_optimizer=None):
+          optimizer, device, dtype, criterion, esm_model, esm_optimizer, seq_dict, batch_converter, alphabet, attentions, attentions_optimizer, wandb_logger, learnable_k=None, ec_number_classifier=None, ec_classifier_optimizer=None, score_matrix=None,
+          print_freq=1) :
     model.train()
     total_loss = 0.
     start_time = time.time()
     esm_model.train()
     query, key = attentions
 
-
-    if (epoch + 1) % args.train_esm_rate == 0:
-        for batch, data in enumerate(train_loader):
-            optimizer.zero_grad()
-            esm_optimizer.zero_grad()
-            if attentions_optimizer is not None:
-                attentions_optimizer.zero_grad()
-            anchor, positive = data
-            anchor = [('', seq_dict[a]) for a in anchor]
-            batch_labels, batch_strs, batch_tokens = batch_converter(anchor)
-            batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
-
-            results = esm_model(batch_tokens.to(device), repr_layers=[args.repr_layer], return_contacts=True)
-
-            token_representations = results["representations"][args.repr_layer]
-            anchor = []
+    for batch, data in enumerate(static_embed_loader):
+        optimizer.zero_grad()
+        anchor_original, positive_original, anchor_attn_mask, positive_attn_mask, anchor_avg_mask, positive_avg_mask, ec_numbers = data
+        anchor_original = anchor_original.cuda()
+        positive_original = positive_original.cuda()
+        anchor_attn_mask = anchor_attn_mask.cuda()
+        positive_attn_mask = positive_attn_mask.cuda()
+        anchor_avg_mask = anchor_avg_mask.cuda()
+        positive_avg_mask = positive_avg_mask.cuda()
+        ec_numbers = ec_numbers.cuda()
+        anchor = []
+        positive = []
+        if query is None:
+            positive = torch.sum(positive_original * positive_avg_mask.unsqueeze(-1), 1)
+            anchor = torch.sum(anchor_original * anchor_avg_mask.unsqueeze(-1), 1)
+        else:
+            positive = forward_attentions(positive_original, query, key, learnable_k, args, avg_mask=positive_avg_mask,
+                                          attn_mask=positive_attn_mask)
             
-            for i, tokens_len in enumerate(batch_lens):
-                if query is None:
-                    anchor.append(token_representations[i, 1 : tokens_len - 1].mean(0))
+            anchor = forward_attentions(anchor_original, query, key, learnable_k, args, avg_mask=anchor_avg_mask, attn_mask=anchor_attn_mask)
+        metrics = {}
+        if args.use_weighted_loss:
+            output, target, buffer_ec = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), ec_numbers)
+            loss = torch.nn.functional.cross_entropy(output, target, reduction='none')
+            predicted = torch.argmax(output, 1)
+            weights = []
+            for i in range(len(predicted)):
+                if predicted[i] == 0:
+                    weights.append(1)
                 else:
-                    q = query(token_representations[i, 1 : tokens_len - 1]) # N x 64
-                    if learnable_k is None:
-                        k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
-                    elif args.use_input_as_k:
-                        k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(0, keepdim=True))
+                    if buffer_ec[predicted[i] - 1] is None:
+                        weights.append(1)
                     else:
-                        k = key(learnable_k).unsqueeze(0).repeat(q.shape[0], 1, 1) # 1 x 64
-                    if args.use_top_k:
-                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
-                        
-                        shape = raw.shape
-                        raw = raw.reshape(-1, raw.shape[-1])
-                        _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                        smallest = torch.zeros_like(raw)
-                        for j in range(len(raw)):
-                            smallest[j, smallest_value[j]] = 1
-                        smallest = smallest.reshape(shape).bool()
-                        raw = raw.reshape(shape)
-                        raw[smallest] = raw[smallest] + float('-inf')
-                        prob = torch.softmax(raw, -1) # N x 1
-                    elif args.use_top_k_sum:
-                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
-                        weights = raw.sum(-2, keepdim=True)
-                        prob = torch.softmax(weights, -1)
-                    else:
-                        prob = torch.softmax(torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64), 1) # N x 1
-                    anchor.append((prob @ token_representations[i, 1 : tokens_len - 1]).sum(0))
-            anchor = torch.stack(anchor)
-            positive = [('', seq_dict[a]) for a in positive]
-            batch_labels, batch_strs, batch_tokens = batch_converter(positive)
-            batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
-            results = esm_model(batch_tokens.to(device), repr_layers=[args.repr_layer], return_contacts=True)
-        
-            token_representations = results["representations"][args.repr_layer].cuda()
-            positive = []
-            for i, tokens_len in enumerate(batch_lens):
-                if query is None:
-                    positive.append(token_representations[i, 1 : tokens_len - 1].mean(0))
-                else:
-                    q = query(token_representations[i, 1 : tokens_len - 1]) # N x 64
-                    if learnable_k is None:
-                        k = key(token_representations[i, 1 : tokens_len - 1]) # 1 x 64
-                    elif args.use_input_as_k:
-                        k = key(token_representations[i, 1 : tokens_len - 1].cuda().mean(0, keepdim=True))
-                    else:
-                        k = key(learnable_k) # 1 x 64
-                    if args.use_top_k:
-                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
-                        
-                        shape = raw.shape
-                        raw = raw.reshape(-1, raw.shape[-1])
-                        _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                        smallest = torch.zeros_like(raw)
-                        for j in range(len(raw)):
-                            smallest[j, smallest_value[j]] = 1
-                        smallest = smallest.reshape(shape).bool()
-                        raw = raw.reshape(shape)
-                        raw[smallest] = raw[smallest] + float('-inf')
-                        prob = torch.softmax(raw, -1) # N x 1
-                    elif args.use_top_k_sum:
-                        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
-                        weights = raw.sum(-2, keepdim=True)
-                        prob = torch.softmax(weights, -1)
-                    else:
-                        prob = torch.softmax(torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64), 1) # N x 1
-                    positive.append((prob @ token_representations[i, 1 : tokens_len - 1]).sum(0))
-            positive = torch.stack(positive)
-            anchor_out, positive_out = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
-
-            loss = criterion(anchor_out, positive_out)
-            loss.backward()
-            optimizer.step()
-            esm_optimizer.step()
-            if attentions_optimizer is not None:
-                attentions_optimizer.step()
-            total_loss += loss.item()
-            if args.verbose:
-                lr = args.learning_rate
-                ms_per_batch = (time.time() - start_time) * 1000
-                cur_loss = loss.item()
-                print(f'| epoch {epoch:3d} | {batch:5d}/{len(train_loader):5d} batches | '
-                    f'lr {lr:02.4f} | ms/batch {ms_per_batch:6.4f} | '
-                    f'loss {cur_loss:5.2f}')
-                start_time = time.time()
-        # record running average training loss
-        return total_loss/(batch + 1)
-    else:
-        for batch, data in enumerate(static_embed_loader):
-            optimizer.zero_grad()
-            anchor_original, positive_original, anchor_attn_mask, positive_attn_mask, anchor_avg_mask, positive_avg_mask, ec_numbers = data
-            anchor_original = anchor_original.cuda()
-            positive_original = positive_original.cuda()
-            anchor_attn_mask = anchor_attn_mask.cuda()
-            positive_attn_mask = positive_attn_mask.cuda()
-            anchor_avg_mask = anchor_avg_mask.cuda()
-            positive_avg_mask = positive_avg_mask.cuda()
-            ec_numbers = ec_numbers.cuda()
-            anchor = []
-            positive = []
-            if query is None:
-                # print(positive_original.shape)
-                # print(positive_avg_mask.shape)
-
-                positive = torch.sum(positive_original * positive_avg_mask.unsqueeze(-1), 1)
-                anchor = torch.sum(anchor_original * anchor_avg_mask.unsqueeze(-1), 1)
-                
-                # assert False
-            else:
-                q_positive = query(positive_original) # N x 64
-                if learnable_k is not None:
-                    k_positive = key(learnable_k).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
-                elif args.use_input_as_k:
-                    positive_mean = torch.sum(positive_original * positive_avg_mask.unsqueeze(-1).sum(1, keepdim=True), 1) # B x d
-                    k_positive = key(positive_mean).unsqueeze(1)
-                else:
-                    k_positive = key(positive_original) # 1 x 64
-                if args.use_top_k:
-                    raw = torch.einsum('ijk,ilk->ijl', k_positive, q_positive) / np.sqrt(64) + positive_attn_mask
-                    
-                    shape = raw.shape
-                    raw = raw.reshape(-1, raw.shape[-1])
-                    _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                    smallest = torch.zeros_like(raw)
-                    for j in range(len(raw)):
-                        smallest[j, smallest_value[j]] = 1
-                    
-                    smallest = smallest.reshape(shape).bool()
-                    raw = raw.reshape(shape)
-                    raw[smallest] = raw[smallest] + float('-inf')
-                    prob = torch.softmax(raw, -1) # N x 1
-                elif args.use_top_k_sum:
-                    raw = torch.einsum('ijk,ilk->ijl', k_positive, q_positive)
-                    weights = raw.sum(-2, keepdim=True)
-                    for i in range(len(weights)):
-                        weights[i, 0][positive_avg_mask[i] == 0] = -float("inf")
-                    prob = torch.softmax(weights, -1)
-                else:
-                    prob = torch.softmax(torch.einsum('ijk,ilk->ijl', k_positive, q_positive) / np.sqrt(64) + positive_attn_mask, -1) 
-                
-                positive_multiple = torch.einsum('ijk,ikl->ijl', prob, positive_original)
-                if not args.use_top_k_sum:
-                    positive = torch.sum(positive_multiple * positive_avg_mask.unsqueeze(-1).repeat(1, 1, positive_multiple.shape[-1]), 1) # proj matrix is NxN
-                else:
-                    # proj matrix is Bx1xN
-                    assert positive_multiple.shape[1] == 1
-                    positive = positive_multiple.squeeze(-2)
-                    # avg mask
-                
-                q_anchor = query(anchor_original) # N x 64
-                if learnable_k is not None:
-                    print(key(learnable_k).unsqueeze(0).shape)
-                    k_anchor = key(learnable_k).unsqueeze(0).repeat(q_positive.shape[0], 1, 1)
-                elif args.use_input_as_k:
-                    k_anchor = key(anchor_original.mean(1, keepdim=True))
-                else:
-                    k_anchor = key(anchor_original)
-                if args.use_top_k:
-                    raw = torch.einsum('ijk,ilk->ijl', k_anchor, q_anchor) / np.sqrt(64) + anchor_attn_mask
-                    
-                    shape = raw.shape
-                    raw = raw.reshape(-1, raw.shape[-1])
-                    _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                    smallest = torch.zeros_like(raw)
-                    for j in range(len(raw)):
-                        smallest[j, smallest_value[j]] = 1
-                    smallest = smallest.reshape(shape).bool()
-                    raw = raw.reshape(shape)
-                    raw[smallest] = raw[smallest] + float('-inf')
-                    prob = torch.softmax(raw, -1) # N x 1
-                elif args.use_top_k_sum:
-                    raw = torch.einsum('ijk,ilk->ijl', k_anchor, q_anchor) / np.sqrt(64)
-                    weights = raw.sum(-2, keepdim=True)
-                    for i in range(len(weights)):
-                        weights[i, 0][anchor_avg_mask[i] == 0] = -float("inf")
-                    prob = torch.softmax(weights, -1)
-                else:
-                    prob = torch.softmax(torch.einsum('ijk,ilk->ijl', k_anchor, q_anchor) / np.sqrt(64) + anchor_attn_mask, -1) 
-                anchor_multiple = torch.bmm(prob, anchor_original)
-                if not args.use_top_k_sum:
-                    anchor = torch.sum(anchor_multiple * anchor_avg_mask.unsqueeze(-1).repeat(1, 1, anchor_multiple.shape[-1]), 1) # proj matrix is NxN
-                else:
-                    # proj matrix is Bx1xN
-                    assert anchor_multiple.shape[1] == 1
-                    anchor = anchor_multiple.squeeze(-2)
+                        weights.append(score_matrix[buffer_ec[predicted[i] - 1]][ec_numbers[i]])
+            weights = torch.tensor(weights).cuda()
+            loss = (loss * weights).mean()
+        elif args.use_ranking_loss:
             output, target = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
             loss = criterion(output, target)
-            
-            loss.backward()
-            optimizer.step()
-            if attentions_optimizer is not None:
-                attentions_optimizer.step()
-            total_loss += loss.item()
-            if args.verbose:
-                lr = args.learning_rate
-                ms_per_batch = (time.time() - start_time) * 1000
-                cur_loss = total_loss 
-                print(f'| epoch {epoch:3d} | {batch:5d}/{len(static_embed_loader):5d} batches | '
-                    f'lr {lr:02.4f} | ms/batch {ms_per_batch:6.4f} | '
-                    f'loss {cur_loss:5.2f}')
-                start_time = time.time()
-        # record running average training loss
-        return total_loss/(batch + 1)
+            distances = torch.cdist(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
+            metrics['distance_values'] = wandb.Histogram(distances.detach().cpu().numpy())
+            label_distances = torch.zeros_like(distances)
+            for i in range(len(output)):
+                for j in range(i + 1, len(output)):
+                    label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
+            m = torch.clamp(20 - label_distances * distances, min=0)
+            m = torch.triu(m, diagonal=1)
+            loss_distance = torch.sum(m)
+            loss += 1e-6 * loss_distance
+            metrics['distance_loss'] = 1e-6 * loss_distance
+        else:
+            output, target = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
+            loss = criterion(output, target)
+        metrics['loss'] = loss.item()
+        aux_loss = 0
+        loss = loss + aux_loss
+
+        loss.backward()
+        optimizer.step()
+        if attentions_optimizer is not None:
+            attentions_optimizer.step()
+        total_loss += loss.item()
+        wandb_logger.log({'train/' + key: metrics[key] for key in metrics})
+        if batch % print_freq == 0:
+            lr = args.learning_rate
+            ms_per_batch = (time.time() - start_time) * 1000
+            cur_loss = loss.item()
+            log_string =  f'| epoch {epoch:3d} | {batch:5d}/{len(static_embed_loader):5d} batches | ' + \
+                f'lr {lr:02.4f} | ms/batch {ms_per_batch:6.4f} | ' + \
+                f'loss {cur_loss:5.2f} | aux loss {aux_loss:5.2f} | '
+                
+            for metric_key in metrics:
+                log_string = log_string + f"{metric_key} {metrics[metric_key]} | "
+            logger.info(log_string)
+            start_time = time.time()
+    # record running average training loss
+    return total_loss/(batch + 1)
 
 def main():
-    seed_everything()
     ensure_dirs('./data/model')
-    args = parse()
-    torch.backends.cudnn.benchmark = True
+    args, wandb_logger = parse_args()
+    if args.seed is not None:
+        seed_everything(args.seed)
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.benchmark = True
     id_ec, ec_id_dict = get_ec_id_dict('./data/' + args.training_data + '.csv')
     ec_id = {key: list(ec_id_dict[key]) for key in ec_id_dict.keys()}
+    score_matrix = calculate_distance_matrix_for_ecs(ec_id_dict)
     seq_dict = {rec.id : rec.seq for rec in SeqIO.parse(f'./data/{args.training_data}.fasta', "fasta")}
     seq_dict.update({rec.id : rec.seq for rec in SeqIO.parse(f'./data/{args.training_data}_single_seq_ECs.fasta', "fasta")})
-
 
     #======================== override args ====================#
     use_cuda = torch.cuda.is_available()
@@ -380,16 +192,15 @@ def main():
     dtype = torch.float32
     lr, epochs = args.learning_rate, args.epoch
     model_name = args.model_name
-    print('==> device used:', device, '| dtype used: ',
-          dtype, "\n==> args:", args)
+    logger.info(args)
 
     #======================== ESM embedding  ===================#
     # loading ESM embedding for dist map
 
     num_devices = torch.cuda.device_count() if torch.cuda.is_available() else 1
     assert num_devices > 0
-    
 
+    #======================== initialize esm model =================#
     esm_model, alphabet = pretrained.load_model_and_alphabet(
         args.esm_model)
     esm_model = esm_model.to(device)
@@ -398,35 +209,17 @@ def main():
     esm_model.eval()
     
     #======================== initialize model =================#
-    model = MoCo(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim).cuda()
+    model = MoCo(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01, betas=(0.9, 0.999))
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000, eta_min=0, last_epoch=-1, verbose=False)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=0, last_epoch=-1, verbose=False)
     esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
     criterion = nn.CrossEntropyLoss().to(device)    
     ec_number_classifier = nn.Sequential(nn.Linear(args.esm_model_dim, 128), nn.ReLU(), nn.Linear(128, len(ec_id.keys()))).cuda()
     ec_classifier_optimizer = torch.optim.Adam(ec_number_classifier.parameters(), 0.001)
     best_loss = float('inf')
 
-    if args.use_learnable_k:
-        learnable_k = nn.Parameter(torch.zeros(1, args.esm_model_dim).cuda())
-    else:
-        learnable_k = None
-
-    if args.use_extra_attention:
-        query = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
-        # nn.init.constant_(query.weight, 1e-3)
-        nn.init.normal_(query.weight, std=np.sqrt(2 / (64 + args.esm_model_dim)))
-        key = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
-        # nn.init.constant_(key.weight, 1e-3)
-        nn.init.normal_(key.weight, std=np.sqrt(2 / (64 + args.esm_model_dim)))
-        if args.use_learnable_k:
-            attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": lr, "momentum": 0.9}, {"params": learnable_k, "lr": lr, "momentum": 0.9}])
-        else:
-            attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": lr, "momentum": 0.9}])
-        attentions = [query, key]
-    else:
-        attentions = [None, None]
-        attentions_optimizer = None
+    learnable_k, attentions, attentions_optimizer = get_attention_modules(args, lr, device)
+    query, key = attentions
     #======================== generate embed =================#
     start_epoch = 1
     
@@ -445,7 +238,7 @@ def main():
                 # print(f"{key_} founded!")
                 new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt").mean(0).detach().cpu()
         remain = len(dict1)
-        print(f"Need to parse {remain}/{original}")
+        logger.info(f"Need to parse {remain}/{original}")
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
             SeqIO.write(dict1.values(), handle, 'fasta')
         
@@ -457,7 +250,7 @@ def main():
                 del dict2[key_]
         
         remain = len(dict2)
-        print(f"Need to parse {remain}/{original}")
+        logger.info(f"Need to parse {remain}/{original}")
 
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
             SeqIO.write(dict2.values(), handle, 'fasta')
@@ -473,242 +266,167 @@ def main():
         dist_map = get_dist_map(
             ec_id_dict, esm_emb, device, dtype)
 
-    print("The number of unique EC numbers: ", len(dist_map.keys()))
+    logger.info(f"The number of unique EC numbers: {len(dist_map.keys())}")
     train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
     
     #======================== training =======-=================#
     # training
     for epoch in range(start_epoch, epochs + 1):
+        
+        if epoch % args.evaluate_freq == 0:
+            train_protein_emb = {}
+            dataset = FastaBatchedDataset.from_file(
+                './data/' + args.training_data + '.fasta')
+            batches = dataset.get_batch_indices(
+                4096, extra_toks_per_seq=1)
+            data_loader = torch.utils.data.DataLoader(
+                dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
+            )
 
-        if epoch % args.train_esm_rate == 0 or (epoch % 50) == 0:
-                new_esm_emb = {}
+            with torch.no_grad():
+                for batch_idx, (labels, strs, toks) in enumerate(data_loader):
+                    batch_lens = (toks != alphabet.padding_idx).sum(1)
+                    if batch_idx % 100 == 0:
+                        logger.info(
+                            f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
+                        )
+                    toks = toks.to(device="cuda", non_blocking=True)
+                    out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
+                    representations = {
+                        layer: t.to(device="cpu") for layer, t in out["representations"].items()
+                    }
+
+                    for i, label in enumerate(labels):
+                        tokens_len = batch_lens[i]
+                        temp = {
+                            layer: t[i, 1 : tokens_len - 1].clone()
+                            for layer, t in representations.items()
+                        }
+                        feature = temp[args.repr_layer].cuda()                        
+                        train_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args)
+                            
+            # train embedding construction
+            train_esm_emb = []
+            for ec in list(ec_id_dict.keys()):
+                ids_for_query = list(ec_id_dict[ec])
+                protein_emb_stacked = torch.stack([train_protein_emb[id] for id in ids_for_query]).to(device) # protein embed with same EC 
+                current_train_esm_emb = model.encoder_q(protein_emb_stacked)
+                train_esm_emb = train_esm_emb + [current_train_esm_emb]
+
+            train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
+            cluster_center_model = get_cluster_center(
+                train_esm_emb, ec_id_dict)
+            # test embedding construction
+            for eval_dataset in ['price', 'new', 'halogenase']:
+            # eval_dataset = 'price'
                 dataset = FastaBatchedDataset.from_file(
-                    './data/' + args.training_data + '.fasta')
+                    f'./data/{eval_dataset}.fasta')
                 batches = dataset.get_batch_indices(
                     4096, extra_toks_per_seq=1)
                 data_loader = torch.utils.data.DataLoader(
                     dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
                 )
 
+                test_protein_emb = {}
                 with torch.no_grad():
                     for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-                        batch_lens = (toks != alphabet.padding_idx).sum(1)
-                        print(
-                            f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
-                        )
+                        if batch_idx % 100 == 0:
+                            logger.info(
+                                f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
+                            )
                         toks = toks.to(device="cuda", non_blocking=True)
                         out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
                         representations = {
                             layer: t.to(device="cpu") for layer, t in out["representations"].items()
                         }
-
+                        batch_lens = (toks != alphabet.padding_idx).sum(1)
+                        
                         for i, label in enumerate(labels):
-                            tokens_len = batch_lens[i]
                             temp = {
-                                layer: t[i, 1 : tokens_len - 1].clone()
+                                layer: t[i, 1 : batch_lens[i] - 1].clone()
                                 for layer, t in representations.items()
                             }
-                            if not args.use_extra_attention:
-                                new_esm_emb[label] = temp[args.repr_layer].mean(0)
-                            else:
-                                feature = temp[args.repr_layer].cuda()
-                                q = query(feature)
-                                if learnable_k is None:
-                                    k = key(feature)
-                                elif args.use_input_as_k:
-                                    k = key(feature.mean(1, keepdim=True))
-                                else:
-                                    k = key(learnable_k)
-                                if args.use_top_k:
-                                    raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
-                                    shape = raw.shape
-                                    raw = raw.reshape(-1, raw.shape[-1])
-                                    _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                                    smallest = torch.zeros_like(raw)
-                                    for j in range(len(raw)):
-                                        smallest[j, smallest_value[j]] = 1
-                                    smallest = smallest.reshape(shape).bool()
-                                    raw = raw.reshape(shape)
-                                    raw[smallest] = raw[smallest] + float('-inf')
-                                    prob = torch.softmax(raw, -1) # N x 1
-                                elif args.use_top_k_sum:
-                                    raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
-                                    weights = raw.sum(-2, keepdim=True)
-                                    prob = torch.softmax(weights, -1)
-                                else:
-                                    prob = torch.softmax(torch.einsum('jk,lk->jl', k, q) / np.sqrt(64), 1) # N x N
-                                new_esm_emb[label] = (prob @ feature).sum(0)
-                            if args.train_esm_rate > 1 and epoch % args.train_esm_rate == 0:
-                                torch.save(temp[args.repr_layer], args.temp_esm_path + "/" + label + ".pt")
-                if epoch % args.train_esm_rate == 0:
-                    dataset = FastaBatchedDataset.from_file(
-                        './data/' + args.training_data + '_single_seq_ECs.fasta')
-                    batches = dataset.get_batch_indices(
-                        4096, extra_toks_per_seq=1)
-                    data_loader = torch.utils.data.DataLoader(
-                        dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
-                    )
-                    with torch.no_grad():
-                        for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-                            print(
-                                f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
-                            )
-                            toks = toks.to(device="cuda", non_blocking=True)
-                            out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
-                            representations = {
-                                layer: t.to(device="cpu") for layer, t in out["representations"].items()
-                            }
-                            batch_lens = (toks != alphabet.padding_idx).sum(1)
-
-                            for i, label in enumerate(labels):
-                                tokens_len = batch_lens[i] 
-                                temp = {
-                                    layer: t[i, 1 : tokens_len - 1].clone()
-                                    for layer, t in representations.items()
-                                }
-                                if args.train_esm_rate > 1:
-                                    torch.save(temp[args.repr_layer], args.temp_esm_path + "/" + label + ".pt")
-                    train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path)
-
-        if epoch % 50 == 0:
-            train_esm_emb = []
-                # for ec in tqdm(list(ec_id_dict.keys())):
-            for ec in list(ec_id_dict.keys()):
-                ids_for_query = list(ec_id_dict[ec])
-                esm_to_cat = [new_esm_emb[id] for id in ids_for_query]
-                train_esm_emb = train_esm_emb + esm_to_cat
-            train_esm_emb = torch.stack(train_esm_emb).to(device=device, dtype=dtype)
-
-            dataset = FastaBatchedDataset.from_file(
-                './data/price.fasta')
-            batches = dataset.get_batch_indices(
-                4096, extra_toks_per_seq=1)
-            data_loader = torch.utils.data.DataLoader(
-                dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
-            )
-            test_emb = {}
-            with torch.no_grad():
-                for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-                    print(
-                        f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
-                    )
-                    toks = toks.to(device="cuda", non_blocking=True)
-                    out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
-                    representations = {
-                        layer: t.to(device="cpu") for layer, t in out["representations"].items()
-                    }
-                    batch_lens = (toks != alphabet.padding_idx).sum(1)
-                    
-                    for i, label in enumerate(labels):
-                        
-                        temp = {
-                            layer: t[i, 1 : batch_lens[i] - 1].clone()
-                            for layer, t in representations.items()
-                        }
-                        feature = temp[args.repr_layer].cuda()
-                        if not args.use_extra_attention:
-                            test_emb[label] = feature.mean(0)
-                        else:
-                            q = query(feature)
-                            if learnable_k is None:
-                                k = key(feature)
-                            elif args.use_input_as_k:
-                                k = key(feature.mean(1, keepdim=True))
-                            else:
-                                k = key(learnable_k)
-                            if args.use_top_k:
-                                raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
-                                
-                                shape = raw.shape
-                                raw = raw.reshape(-1, raw.shape[-1])
-                                _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                                smallest = torch.zeros_like(raw)
-                                for j in range(len(raw)):
-                                    smallest[j, smallest_value[j]] = 1
-                                smallest = smallest.reshape(shape).bool()
-                                raw = raw.reshape(shape)
-                                raw[smallest] = raw[smallest] + float('-inf')
-                                prob = torch.softmax(raw, -1) # N x 1
-                            elif args.use_top_k_sum:
-                                raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
-                                weights = raw.sum(-2, keepdim=True)
-                                prob = torch.softmax(weights, -1)
-                            else:
-                                prob = torch.softmax(torch.einsum('jk,lk->jl', k, q) / np.sqrt(64), 1) # N x 1
-                            test_emb[label] = (prob @ feature).sum(0)
-            test_esm_emb = []
-            id_ec_test, ec_id_dict_test = get_ec_id_dict('./data/price.csv')
-            ids_for_query = list(id_ec_test.keys())
-            esm_to_cat = [test_emb[id] for id in ids_for_query]
+                            feature = temp[args.repr_layer].cuda()
+                            test_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args)
                 
-            test_esm_emb = torch.stack(esm_to_cat)
-            train_esm_emb = model.encoder_q(train_esm_emb)
-            test_esm_emb = model.encoder_q(test_esm_emb)
-            eval_dist = get_dist_map_test(train_esm_emb, test_esm_emb, ec_id_dict, id_ec_test, device, dtype)
-            eval_df = pd.DataFrame.from_dict(eval_dist)
-            out_filename = "results/price_temp" 
-            write_max_sep_choices(eval_df, out_filename, gmm=None)
-            if True:
+                
+                total_ec_n, out_dim = len(ec_id_dict.keys()), train_esm_emb.size(1)
+                model_lookup = torch.zeros(total_ec_n, out_dim, device=device, dtype=dtype)
+                ecs = list(cluster_center_model.keys())
+                id_ec_test, ec_id_dict_test = get_ec_id_dict(f'./data/{eval_dataset}.csv')
+                ids_for_query = list(id_ec_test.keys())
+                test_protein_emb_to_cat = [test_protein_emb[id] for id in ids_for_query]
+                test_protein_emb = torch.stack(test_protein_emb_to_cat)
+
+                for i, ec in enumerate(ecs):
+                    model_lookup[i] = cluster_center_model[ec]
+                
+                ids = list(id_ec_test.keys())
+                dist = {}
+                test_protein_emb = model.encoder_q(test_protein_emb)
+                
+                for ec in list(ec_id_dict.keys()):
+                    for i, key1 in enumerate(ids):
+                        dist_norm = (test_protein_emb[i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2)
+                        dist_norm = dist_norm.detach().cpu().numpy()
+                        # print(dist_norm)
+                        if key1 not in dist:
+                            dist[key1] = {}
+                        dist[key1][ec] = dist_norm
+                    
+                eval_dist = dist
+                eval_df = pd.DataFrame.from_dict(eval_dist)
+                eval_df = eval_df.astype(float)
+                out_filename = f"results/{eval_dataset}_{args.model_name}" 
+                write_max_sep_choices(eval_df, out_filename, gmm=None)
+                
                 pred_label = get_pred_labels(out_filename, pred_type='_maxsep')
                 pred_probs = get_pred_probs(out_filename, pred_type='_maxsep')
-                true_label, all_label = get_true_labels('./data/price')
-                pre, rec, f1, roc, acc = get_eval_metrics(
-                    pred_label, pred_probs, true_label, all_label)
-                print("############ EC calling results using maximum separation ############")
-                print('-' * 75)
-                print(f'>>> total samples: {len(true_label)} | total ec: {len(all_label)} \n'
-                    f'>>> precision: {pre:.3} | recall: {rec:.3}'
-                    f'| F1: {f1:.3} | AUC: {roc:.3} ')
-                print('-' * 75)
+                true_label, all_label = get_true_labels(f'./data/{eval_dataset}')
+                try:
+                    pre, rec, f1, roc, acc = get_eval_metrics(
+                        pred_label, pred_probs, true_label, all_label)
 
+                    logger.info(f'total samples: {len(true_label)} | total ec: {len(all_label)}')
+                    logger.info(f'precision: {pre:.3} | recall: {rec:.3} | F1: {f1:.3} | AUC: {roc:.3} ')
+                    wandb_logger.log({f'eval/{eval_dataset}/precision': pre, 
+                                    f'eval/{eval_dataset}/recall': rec,
+                                    f'eval/{eval_dataset}/F1': f1,
+                                    f'eval/{eval_dataset}/AUC': roc})
+                except:
+                    pass
+
+
+        # assert False
         # -------------------------------------------------------------------- #
         epoch_start_time = time.time()
         train_loss = train(model, args, epoch, train_loader, static_embed_loader,
                            optimizer, device, dtype, criterion, 
                            esm_model, esm_optimizer, seq_dict, 
-                           batch_converter, alphabet, attentions, attentions_optimizer,
-                           ec_number_classifier=ec_number_classifier, ec_classifier_optimizer=ec_classifier_optimizer)
+                           batch_converter, alphabet, attentions, attentions_optimizer, wandb_logger,
+                           ec_number_classifier=ec_number_classifier, ec_classifier_optimizer=ec_classifier_optimizer,
+                           score_matrix=score_matrix)
         scheduler.step()
         # only save the current best model near the end of training
         if (train_loss < best_loss):
-            torch.save(model.state_dict(), './data/model/moco_best_' + model_name + '.pth')
-            torch.save(esm_model.state_dict(), './data/model/moco_esm_best_' + model_name + '.pth')
-            if args.use_extra_attention:
-                torch.save(query.state_dict(), './data/model/moco_query_best_' + model_name + '.pth')
-                torch.save(key.state_dict(), './data/model/moco_key_best_' + model_name + '.pth')
+            save_state_dicts(model, esm_model, query, key,
+                             optimizer, esm_optimizer, attentions_optimizer,
+                             args, is_best=True, output_name=model_name, save_esm=False)
             best_loss = train_loss
-            print(f'Best from epoch : {epoch:3d}; loss: {train_loss:6.4f}')
-        elif epoch % 500 == 0:
-            torch.save(model.state_dict(), './data/model/moco_' + model_name + '.pth')
-            torch.save(esm_model.state_dict(), './data/model/moco_esm_' + model_name + '.pth')
-            if args.use_extra_attention:
-                torch.save(query.state_dict(), './data/model/moco_query_' + model_name + '.pth')
-                torch.save(key.state_dict(), './data/model/moco_key_' + model_name + '.pth')
+            logger.info(f'Best from epoch : {epoch:3d}; loss: {train_loss:6.4f}')
+        else:
+            save_state_dicts(model, esm_model, query, key,
+                            optimizer, esm_optimizer, attentions_optimizer,
+                            args, is_best=train_loss < best_loss, output_name=model_name, save_esm=False)
         elapsed = time.time() - epoch_start_time
-        print('-' * 75)
-        print(f'| end of epoch {epoch:3d} | time: {elapsed:5.2f}s | '
+
+        logger.info(f'| end of epoch {epoch:3d} | time: {elapsed:5.2f}s | '
               f'training loss {train_loss:6.4f}')
-        print('-' * 75)
+
+    wandb_logger.finish()
     # remove tmp save weights
-    os.remove('./data/model/moco_' + model_name + '.pth')
-    os.remove('./data/model/moco_' + model_name + '_' + str(epoch) + '.pth')
-
-    os.remove('./data/model/moco_esm_' + model_name + '.pth')
-    os.remove('./data/model/moco_esm_' + model_name + '_' + str(epoch) + '.pth')
-
-    if args.use_extra_attention:
-        os.remove('./data/model/moco_query_' + model_name + '.pth')
-        os.remove('./data/model/moco_query_' + model_name + '_' + str(epoch) + '.pth')
-
-        os.remove('./data/model/moco_key_' + model_name + '.pth')
-        os.remove('./data/model/moco_key_' + model_name + '_' + str(epoch) + '.pth')
-    # save final weights
-    torch.save(model.state_dict(), './data/model/moco_' + model_name + '.pth')
-    torch.save(esm_model.state_dict(), './data/model/moco_esm_' + model_name + '.pth')
-    if args.use_extra_attention:
-        torch.save(query.state_dict(), './data/model/moco_query_' + model_name + '.pth')
-        torch.save(key.state_dict(), './data/model/moco_key_' + model_name + '.pth')
 
 
 if __name__ == '__main__':
     main()
+    

@@ -138,9 +138,9 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
             m = torch.clamp(20 - label_distances * distances, min=0)
             m = torch.triu(m, diagonal=1)
-            loss_distance = args.distance_loss_coef * torch.sum(m)
-            loss += loss_distance
-            metrics['distance_loss'] = 1e-6 * loss_distance
+            loss_distance = torch.sum(m)
+            loss += args.distance_loss_coef * loss_distance
+            metrics['distance_loss'] = args.distance_loss_coef * loss_distance
             loss = loss + aux_loss
             loss.backward()
             optimizer.step()
@@ -164,11 +164,15 @@ def train(model, args, epoch, train_loader, static_embed_loader,
         # record running average training loss
     return total_loss/(batch + 1)
 def main():
-    seed_everything()
     ensure_dirs('./data/model')
     args, wandb_logger = parse_args()
+    
+    if args.seed is not None:
+        seed_everything(args.seed)
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.benchmark = True
 
-    torch.backends.cudnn.benchmark = True
     id_ec, ec_id_dict = get_ec_id_dict('./data/' + args.training_data + '.csv')
     score_matrix = calculate_distance_matrix_for_ecs(ec_id_dict)
     ec_id = {key: list(ec_id_dict[key]) for key in ec_id_dict.keys()}
