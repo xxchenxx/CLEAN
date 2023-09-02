@@ -136,6 +136,7 @@ def parse_args():
     parser.add_argument('--use_SMILE_cls_token', action="store_true")
     parser.add_argument('--no_wandb', action="store_true")
 
+
     parser.add_argument('--distance_loss_coef', type=float, default=1e-6)
 
 
