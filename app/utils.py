@@ -136,6 +136,11 @@ def parse_args():
     parser.add_argument('--use_ranking_loss', action="store_true")
     parser.add_argument('--use_SMILE_cls_token', action="store_true")
     parser.add_argument('--no_wandb', action="store_true")
+
+
+    parser.add_argument('--distance_loss_coef', type=float, default=1e-6)
+
+
     args = parser.parse_args()
 
     if args.wandb_name is None:
