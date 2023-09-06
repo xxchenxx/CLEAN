@@ -110,6 +110,7 @@ def parse_args():
     parser.add_argument('-e', '--epoch', type=int, default=2000)
     parser.add_argument('-n', '--model_name', type=str, default='split10_triplet')
     parser.add_argument('--wandb_name', type=str, default=None)
+    parser.add_argument('--fuse_mode', type=str, default='weighted_mean')
     parser.add_argument('-t', '--training_data', type=str, default='split10')
     parser.add_argument('-d', '--hidden_dim', type=int, default=512)
     parser.add_argument('-o', '--out_dim', type=int, default=128)
@@ -135,7 +136,6 @@ def parse_args():
     parser.add_argument('--use_ranking_loss', action="store_true")
     parser.add_argument('--use_SMILE_cls_token', action="store_true")
     parser.add_argument('--no_wandb', action="store_true")
-
 
     parser.add_argument('--distance_loss_coef', type=float, default=1e-6)
 
