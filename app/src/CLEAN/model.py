@@ -268,7 +268,7 @@ class Fuser(nn.Module):
             projected_smile_embed = self.proj(smile_embed)
             fused_feature = self.fuser([esm_embed, projected_smile_embed])
         elif self.fuse_mode == 'mlp':
-            fused_feature = self.fuser(torch.cat([esm_embed, projected_smile_embed], -1))
+            fused_feature = self.fuser(torch.cat([esm_embed, smile_embed], -1))
         else:
             raise NotImplementedError
         return fused_feature
