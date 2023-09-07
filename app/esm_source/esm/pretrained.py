@@ -21,11 +21,11 @@ def _has_regression_weights(model_name):
     return not ("esm1v" in model_name or "esm_if" in model_name or "270K" in model_name or "500K" in model_name)
 
 
-def load_model_and_alphabet(model_name, use_adapter=False, adapter_rank=8, use_lora=False, lora_rank=8):
+def load_model_and_alphabet(model_name, use_adapter=False, adapter_rank=8, use_lora=False, lora_rank=8, lora_alpha=16):
     if model_name.endswith(".pt"):  # treat as filepath
-        return load_model_and_alphabet_local(model_name, use_adapter, adapter_rank, use_lora, lora_rank)
+        return load_model_and_alphabet_local(model_name, use_adapter, adapter_rank, use_lora, lora_rank, lora_alpha)
     else:
-        return load_model_and_alphabet_hub(model_name, use_adapter, adapter_rank, use_lora, lora_rank)
+        return load_model_and_alphabet_hub(model_name, use_adapter, adapter_rank, use_lora, lora_rank, lora_alpha)
 
 
 def load_hub_workaround(url):
@@ -64,7 +64,7 @@ def load_model_and_alphabet_hub(model_name):
     return load_model_and_alphabet_core(model_name, model_data, regression_data)
 
 
-def load_model_and_alphabet_local(model_location, use_adapter=False, adapter_rank=8, use_lora=False, lora_rank=16):
+def load_model_and_alphabet_local(model_location, use_adapter=False, adapter_rank=8, use_lora=False, lora_rank=16, lora_alpha=16):
     """Load from local path. The regression weights need to be co-located"""
     model_location = Path(model_location)
     model_data = torch.load(str(model_location), map_location="cpu")
@@ -77,7 +77,7 @@ def load_model_and_alphabet_local(model_location, use_adapter=False, adapter_ran
             regression_data = None
     else:
         regression_data = None
-    return load_model_and_alphabet_core(model_name, model_data, regression_data, use_adapter=use_adapter, adapter_rank=adapter_rank, use_lora=use_lora, lora_rank=lora_rank)
+    return load_model_and_alphabet_core(model_name, model_data, regression_data, use_adapter=use_adapter, adapter_rank=adapter_rank, use_lora=use_lora, lora_rank=lora_rank, lora_alpha=lora_alpha)
 
 
 def has_emb_layer_norm_before(model_state):
@@ -164,7 +164,7 @@ def _load_model_and_alphabet_core_v1(model_data):
     return model, alphabet, model_state
 
 
-def _load_model_and_alphabet_core_v2(model_data, use_adapter, adapter_rank, use_lora, lora_rank):
+def _load_model_and_alphabet_core_v2(model_data, use_adapter, adapter_rank, use_lora, lora_rank, lora_alpha):
     def upgrade_state_dict(state_dict):
         """Removes prefixes 'model.encoder.sentence_encoder.' and 'model.encoder.'."""
         prefixes = ["encoder.sentence_encoder.", "encoder."]
@@ -185,19 +185,20 @@ def _load_model_and_alphabet_core_v2(model_data, use_adapter, adapter_rank, use_
         use_adapter=use_adapter,
         adapter_rank=adapter_rank,
         use_lora=use_lora,
-        lora_rank=lora_rank
+        lora_rank=lora_rank,
+        lora_alpha=lora_alpha
     )
     return model, alphabet, state_dict
 
 
-def load_model_and_alphabet_core(model_name, model_data, regression_data=None, use_adapter=False, adapter_rank=8, use_lora=False, lora_rank=8):
+def load_model_and_alphabet_core(model_name, model_data, regression_data=None, use_adapter=False, adapter_rank=8, use_lora=False, lora_rank=8, lora_alpha=16):
     if regression_data is not None:
         model_data["model"].update(regression_data["model"])
 
     if model_name.startswith("esm2"):
-        model, alphabet, model_state = _load_model_and_alphabet_core_v2(model_data, use_adapter, adapter_rank, use_lora, lora_rank)
+        model, alphabet, model_state = _load_model_and_alphabet_core_v2(model_data, use_adapter, adapter_rank, use_lora, lora_rank, lora_alpha)
     else:
-        model, alphabet, model_state = _load_model_and_alphabet_core_v1(model_data, use_adapter, adapter_rank, use_lora, lora_rank)
+        model, alphabet, model_state = _load_model_and_alphabet_core_v1(model_data, use_adapter, adapter_rank, use_lora, lora_rank, lora_alpha)
 
     expected_keys = set(model.state_dict().keys())
     found_keys = set(model_state.keys())

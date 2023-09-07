@@ -88,6 +88,7 @@ class MultiheadAttention(nn.Module):
         adapter_rank=8,
         use_lora=False,
         lora_rank=8,
+        lora_alpha=16,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -115,7 +116,7 @@ class MultiheadAttention(nn.Module):
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.use_lora = use_lora
         self.lora_rank = lora_rank
-        self.lora_alpha = 16
+        self.lora_alpha = lora_alpha
         if self.use_lora:
             self.q_proj_lora_d = nn.Linear(embed_dim, self.lora_rank, bias=False)
             self.q_proj_lora_u = nn.Linear(self.lora_rank, embed_dim, bias=False)

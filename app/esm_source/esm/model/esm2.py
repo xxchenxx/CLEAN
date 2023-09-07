@@ -23,6 +23,7 @@ class ESM2(nn.Module):
         adapter_rank=8,
         use_lora=False,
         lora_rank=8,
+        lora_alpha=16,
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -43,6 +44,7 @@ class ESM2(nn.Module):
         self.adapter_rank = adapter_rank
         self.use_lora = use_lora
         self.lora_rank = lora_rank
+        self.lora_alpha = lora_alpha
         self._init_submodules()
 
     def _init_submodules(self):
@@ -65,7 +67,8 @@ class ESM2(nn.Module):
                     use_adapter=self.use_adapter,
                     adapter_rank=self.adapter_rank,
                     use_lora=self.use_lora,
-                    lora_rank=self.lora_rank
+                    lora_rank=self.lora_rank,
+                    lora_alpha=self.lora_alpha
                 )
                 for _ in range(self.num_layers)
             ]
