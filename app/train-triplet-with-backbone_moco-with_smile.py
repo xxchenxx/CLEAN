@@ -71,14 +71,14 @@ def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/
     train_params = {
         'batch_size': args.batch_size,
         'shuffle': True,
-        'num_workers': 4,
+        'num_workers': 2,
     }
     ec_list = list(ec_id.keys())
     embed_params = {
         'batch_size': args.batch_size,
         'shuffle': True,
         'collate_fn': partial(custom_collate, ec_list=ec_list),
-        'num_workers': 4,
+        'num_workers': 2,
     }
     positive = mine_hard_positives(dist_map, 3)
     train_data = MoCo_dataset_with_mine_EC_and_SMILE(id_ec, ec_id, positive, with_ec_number=True, use_random_augmentation=args.use_random_augmentation, return_name=True, use_SMILE_cls_token=args.use_SMILE_cls_token)
@@ -214,7 +214,7 @@ def main():
     esm_model.eval()
     
     #======================== initialize model =================#
-    model = MoCo_with_SMILE(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim, use_negative_smile=args.use_negative_smile).to(device)
+    model = MoCo_with_SMILE(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim, use_negative_smile=args.use_negative_smile, fuse_mode=args.fuse_mode).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01, betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=0, last_epoch=-1, verbose=False)
     esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))

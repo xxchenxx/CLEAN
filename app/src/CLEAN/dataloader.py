@@ -251,7 +251,7 @@ class MoCo_dataset_with_mine_EC_and_SMILE(torch.utils.data.Dataset):
 
     def __init__(self, id_ec, ec_id, mine_pos, path='data/esm_data/', 
                  with_ec_number=False, use_random_augmentation=False,
-                 return_name = False, use_smile_cls_token=False, use_SMILE_cls_token=False):
+                 return_name = False, use_SMILE_cls_token=False):
         self.id_ec = id_ec
         self.ec_id = ec_id
         self.full_list = []
@@ -269,11 +269,10 @@ class MoCo_dataset_with_mine_EC_and_SMILE(torch.utils.data.Dataset):
 
         if use_SMILE_cls_token:
             for key in self.smile_embed:
-                self.smile_embed[key] = self.smile_embed[key][0]
+                self.smile_embed[key] = [l[:1] for l in self.smile_embed[key]]
 
         self.use_random_augmentation = use_random_augmentation
         self.return_name = return_name
-        self.use_smile_cls_token = use_smile_cls_token
         self.smile_embed_shape = next(iter(self.smile_embed.items()))[1][0].shape
         self.use_SMILE_cls_token = use_SMILE_cls_token
 
