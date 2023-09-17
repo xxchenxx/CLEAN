@@ -71,14 +71,14 @@ def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/
     train_params = {
         'batch_size': args.batch_size,
         'shuffle': True,
-        'num_workers': 2,
+        'num_workers': 1,
     }
     ec_list = list(ec_id.keys())
     embed_params = {
         'batch_size': args.batch_size,
         'shuffle': True,
         'collate_fn': partial(custom_collate, ec_list=ec_list),
-        'num_workers': 2,
+        'num_workers': 1,
     }
     positive = mine_hard_positives(dist_map, 3)
     train_data = MoCo_dataset_with_mine_EC_and_SMILE(id_ec, ec_id, positive, with_ec_number=True, use_random_augmentation=args.use_random_augmentation, return_name=True, use_SMILE_cls_token=args.use_SMILE_cls_token)
@@ -147,7 +147,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             m = torch.clamp(20 - label_distances * distances, min=0)
             m = torch.triu(m, diagonal=1)
             loss_distance = torch.sum(m)
-            loss += args.distance_loss_coef * loss_distance
+            loss += args.distance_loss_coef * loss_distance / output.shape[0]
             metrics['distance_loss'] = args.distance_loss_coef * loss_distance
         else:
             output, target, aux_loss, metrics = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
@@ -346,6 +346,10 @@ def main():
                 train_esm_emb = train_esm_emb + [current_train_esm_emb]
 
             train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
+            if epoch % 50 == 0:
+                dist_map = get_dist_map(
+                ec_id_dict, train_esm_emb, device, dtype)
+                train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
             cluster_center_model = get_cluster_center(
                 train_esm_emb, ec_id_dict)
             # test embedding construction
