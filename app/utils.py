@@ -135,6 +135,7 @@ def parse_args():
     parser.add_argument('--use_random_augmentation', action="store_true")
     parser.add_argument('--use_weighted_loss', action="store_true")
     parser.add_argument('--use_ranking_loss', action="store_true")
+    parser.add_argument('--use_cosine_ranking_loss', action="store_true")
     parser.add_argument('--use_SMILE_cls_token', action="store_true")
     parser.add_argument('--no_wandb', action="store_true")
     parser.add_argument('--remap', action="store_true")

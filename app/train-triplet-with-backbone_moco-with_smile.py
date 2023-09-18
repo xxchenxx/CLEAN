@@ -120,7 +120,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             anchor = forward_attentions(anchor_original, query, key, learnable_k, args, avg_mask=anchor_avg_mask,
                                           attn_mask=anchor_attn_mask)
         if args.use_weighted_loss:
-            output, target, aux_loss, metrics, buffer_ec = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile, ec_numbers)
+            output, target, aux_loss, metrics, buffer_ec, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile, ec_numbers)
             loss = torch.nn.functional.cross_entropy(output, target, reduction='none')
             predicted = torch.argmax(output, 1)
             weights = []
@@ -135,9 +135,9 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             weights = torch.tensor(weights).cuda()
             loss = (loss * weights).mean()
         elif args.use_ranking_loss:
-            output, target, aux_loss, metrics = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
+            output, target, aux_loss, metrics, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
             loss = criterion(output, target)
-            distances = torch.cdist(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
+            distances = torch.cdist(q.to(device=device, dtype=dtype), q.to(device=device, dtype=dtype))
             distance_values = distances.detach().cpu().numpy()
             metrics['distance_values'] = wandb.Histogram(distance_values)
             label_distances = torch.zeros_like(distances)
@@ -146,11 +146,26 @@ def train(model, args, epoch, train_loader, static_embed_loader,
                     label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
             m = torch.clamp(20 - label_distances * distances, min=0)
             m = torch.triu(m, diagonal=1)
-            loss_distance = torch.sum(m)
+            loss_distance = torch.mean(m)
+            loss += args.distance_loss_coef * loss_distance / output.shape[0]
+            metrics['distance_loss'] = args.distance_loss_coef * loss_distance
+        elif args.use_cosine_ranking_loss:
+            output, target, aux_loss, metrics, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
+            loss = criterion(output, target)
+            distances = q @ q.transpose(0, 1)
+            distance_values = distances.detach().cpu().numpy()
+            metrics['distance_values'] = wandb.Histogram(distance_values)
+            label_distances = torch.zeros_like(distances)
+            for i in range(len(output)):
+                for j in range(i + 1, len(output)):
+                    label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
+            m = torch.clamp(1 - label_distances * distances, min=0)
+            m = torch.triu(m, diagonal=1)
+            loss_distance = torch.mean(m)
             loss += args.distance_loss_coef * loss_distance / output.shape[0]
             metrics['distance_loss'] = args.distance_loss_coef * loss_distance
         else:
-            output, target, aux_loss, metrics = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
+            output, target, aux_loss, metrics, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
             loss = criterion(output, target)
         metrics['loss'] = loss.item()
         loss = loss + aux_loss
@@ -218,16 +233,16 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01, betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=0, last_epoch=-1, verbose=False)
     esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
-    criterion = nn.CrossEntropyLoss().to(device)    
+    criterion = nn.CrossEntropyLoss().to(device)
     ec_number_classifier = nn.Sequential(nn.Linear(args.esm_model_dim, 128), nn.ReLU(), nn.Linear(128, len(ec_id.keys()))).cuda()
     ec_classifier_optimizer = torch.optim.Adam(ec_number_classifier.parameters(), 0.001)
     best_loss = float('inf')
 
     learnable_k, attentions, attentions_optimizer = get_attention_modules(args, lr, device)
     query, key = attentions
-    #======================== generate embed =================#
+    # ======================== generate embed ================= #
     start_epoch = 1
-    
+
     if True:
         new_esm_emb = {}
 
@@ -246,7 +261,7 @@ def main():
         logger.info(f"Need to parse {remain}/{original}")
         with open(f'temp_{args.training_data}.fasta', 'w') as handle:
             SeqIO.write(dict1.values(), handle, 'fasta')
-        
+
         new_esm_emb_created = generate_from_file(f'temp_{args.training_data}.fasta', alphabet, esm_model, args, start_epoch)
         new_esm_emb.update(new_esm_emb_created)
         original = len(list(dict2.keys()))

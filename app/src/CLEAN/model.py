@@ -408,6 +408,6 @@ class MoCo_with_SMILE(nn.Module):
         # dequeue and enqueue
         self._dequeue_and_enqueue(k, ec_numbers)
         if ec_numbers is None:
-            return logits, labels, aux_loss, metrics
+            return logits, labels, aux_loss, metrics, q
         else:
-            return logits, labels, aux_loss, metrics, self.ec_number_labels
+            return logits, labels, aux_loss, metrics, self.ec_number_labels, q
