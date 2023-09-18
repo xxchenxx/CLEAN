@@ -20,7 +20,7 @@ from esm import FastaBatchedDataset, pretrained
 from Bio import SeqIO
 
 from utils import save_state_dicts, get_logger, \
-    get_attention_modules, parse_args, calculate_distance_matrix_for_ecs
+    get_attention_modules, parse_args, calculate_distance_matrix_for_ecs, calculate_cosine_distance_matrix_for_ecs
 
 from model_utils import forward_attentions, generate_from_file
 import wandb
@@ -88,8 +88,7 @@ def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/
     return train_loader, static_embed_loader
 
 def train(model, args, epoch, train_loader, static_embed_loader,
-          optimizer, device, dtype, criterion, esm_model, esm_optimizer, seq_dict, batch_converter, alphabet, attentions, attentions_optimizer, wandb_logger, learnable_k=None, ec_number_classifier=None, ec_classifier_optimizer=None, score_matrix=None,
-          print_freq=1) :
+          optimizer, device, dtype, criterion, esm_model, esm_optimizer, seq_dict, batch_converter, alphabet, attentions, attentions_optimizer, wandb_logger, learnable_k=None, ec_number_classifier=None, ec_classifier_optimizer=None, score_matrix=None, cosine_score_matrix=None, print_freq=1) :
     model.train()
     total_loss = 0.
     start_time = time.time()
@@ -158,8 +157,8 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             label_distances = torch.zeros_like(distances)
             for i in range(len(output)):
                 for j in range(i + 1, len(output)):
-                    label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
-            m = torch.clamp(1 - label_distances * distances, min=0)
+                    label_distances[i, j] = cosine_score_matrix[ec_numbers[i], ec_numbers[j]]
+            m = torch.clamp(label_distances * distances - 1, min=0)
             m = torch.triu(m, diagonal=1)
             loss_distance = torch.mean(m)
             loss += args.distance_loss_coef * loss_distance / output.shape[0]
@@ -203,6 +202,7 @@ def main():
     id_ec, ec_id_dict = get_ec_id_dict('./data/' + args.training_data + '.csv')
     ec_id = {key: list(ec_id_dict[key]) for key in ec_id_dict.keys()}
     score_matrix = calculate_distance_matrix_for_ecs(ec_id_dict)
+    cosine_score_matrix = calculate_cosine_distance_matrix_for_ecs(ec_id_dict)
     seq_dict = {rec.id : rec.seq for rec in SeqIO.parse(f'./data/{args.training_data}.fasta', "fasta")}
     seq_dict.update({rec.id : rec.seq for rec in SeqIO.parse(f'./data/{args.training_data}_single_seq_ECs.fasta', "fasta")})
 
@@ -471,7 +471,7 @@ def main():
                            esm_model, esm_optimizer, seq_dict, 
                            batch_converter, alphabet, attentions, attentions_optimizer, wandb_logger,
                            ec_number_classifier=ec_number_classifier, ec_classifier_optimizer=ec_classifier_optimizer,
-                           score_matrix=score_matrix)
+                           score_matrix=score_matrix, cosine_score_matrix=cosine_score_matrix)
         scheduler.step()
         # only save the current best model near the end of training
         if (train_loss < best_loss):

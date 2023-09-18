@@ -76,6 +76,26 @@ def calculate_distance_matrix_for_ecs(dict_, mode='linear'):
     score_matrix[score_matrix >= 4] = 100000
     return score_matrix
 
+def calculate_cosine_distance_matrix_for_ecs(dict_, mode='linear'):
+    ecs = list(dict_.keys())
+    score_matrix = np.ones((len(ecs)+ 1, len(ecs) + 1))
+    for i in range(len(ecs)):
+        for j in range(i, len(ecs)):
+            e1 = ecs[i].strip().split(".")
+            e2 = ecs[j].strip().split(".")
+            k = 0
+            while k <= 4:
+                if k == 4:
+                    break
+                if e1[k] != e2[k]:
+                    break
+                else:
+                    k += 1
+            score_matrix[i, j] = k
+            score_matrix[j, i] = k
+    score_matrix = 5 - score_matrix
+    return score_matrix
+
 def get_attention_modules(args, lr, device):
     if args.use_learnable_k:
         learnable_k = nn.Parameter(torch.zeros(1, args.esm_model_dim))
