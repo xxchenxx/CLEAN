@@ -156,12 +156,11 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             metrics['distance_values'] = wandb.Histogram(distance_values)
             label_distances = torch.zeros_like(distances)
             for i in range(len(output)):
-                for j in range(i + 1, len(output)):
+                for j in range(len(output)):
                     label_distances[i, j] = cosine_score_matrix[ec_numbers[i], ec_numbers[j]]
             m = torch.clamp(label_distances * distances - 1, min=0)
-            m = torch.triu(m, diagonal=1)
             loss_distance = torch.mean(m)
-            loss += args.distance_loss_coef * loss_distance / output.shape[0]
+            loss += args.distance_loss_coef * loss_distance / (output.shape[0] ** 2) 
             metrics['distance_loss'] = args.distance_loss_coef * loss_distance
         else:
             output, target, aux_loss, metrics, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
