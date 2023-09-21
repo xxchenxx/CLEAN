@@ -126,7 +126,8 @@ class Dummy:
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('-l', '--learning_rate', type=float, default=5e-4)
-    parser.add_argument('--attention_`learning_rate', type=float, default=5e-4)
+    parser.add_argument('--attention_learning_rate', type=float, default=5e-4)
+    parser.add_argument('--attention_weight_decay', type=float, default=1e-3)
     parser.add_argument('--esm_learning_rate', type=float, default=1e-5)
     parser.add_argument('-e', '--epoch', type=int, default=2000)
     parser.add_argument('-n', '--model_name', type=str, default='split10_triplet')
