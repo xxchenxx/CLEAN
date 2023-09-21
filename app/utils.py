@@ -110,9 +110,9 @@ def get_attention_modules(args, lr, device):
         # nn.init.constant_(key.weight, 1e-3)
         nn.init.normal_(key.weight, std=np.sqrt(2 / (64 + args.esm_model_dim)))
         if args.use_learnable_k:
-            attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": lr, "momentum": 0.9}, {"params": learnable_k, "lr": lr, "momentum": 0.9}])
+            attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": args.attention_learning_rate, "weight_decay": args.attention_weight_decay, "momentum": 0.9}, {"params": learnable_k, "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay, }])
         else:
-            attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": lr, "momentum": 0.9}])
+            attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}, {"params": key.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}])
         attentions = [query, key]
     else:
         attentions = [None, None]
@@ -126,6 +126,7 @@ class Dummy:
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('-l', '--learning_rate', type=float, default=5e-4)
+    parser.add_argument('--attention_`learning_rate', type=float, default=5e-4)
     parser.add_argument('--esm_learning_rate', type=float, default=1e-5)
     parser.add_argument('-e', '--epoch', type=int, default=2000)
     parser.add_argument('-n', '--model_name', type=str, default='split10_triplet')
@@ -160,6 +161,7 @@ def parse_args():
     parser.add_argument('--no_wandb', action="store_true")
     parser.add_argument('--remap', action="store_true")
     parser.add_argument('--distance_loss_coef', type=float, default=1e-4)
+    parser.add_argument('--weight_decay', type=float, default=0.01)
 
 
     args = parser.parse_args()

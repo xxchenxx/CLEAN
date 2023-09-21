@@ -141,7 +141,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             metrics['distance_values'] = wandb.Histogram(distance_values)
             label_distances = torch.zeros_like(distances)
             for i in range(len(output)):
-                for j in range(i + 1, len(output)):
+                for j in range(len(output)):
                     label_distances[i, j] = score_matrix[ec_numbers[i], ec_numbers[j]]
             m = torch.clamp(20 - label_distances * distances, min=0)
             m = torch.triu(m, diagonal=1)
@@ -229,7 +229,7 @@ def main():
     
     #======================== initialize model =================#
     model = MoCo_with_SMILE(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim, use_negative_smile=args.use_negative_smile, fuse_mode=args.fuse_mode).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01, betas=(0.9, 0.999))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.weight_decay, betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=0, last_epoch=-1, verbose=False)
     esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
     criterion = nn.CrossEntropyLoss().to(device)
