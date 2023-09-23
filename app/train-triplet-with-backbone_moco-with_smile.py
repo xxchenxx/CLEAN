@@ -71,14 +71,14 @@ def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/
     train_params = {
         'batch_size': args.batch_size,
         'shuffle': True,
-        'num_workers': 1,
+        'num_workers': 4,
     }
     ec_list = list(ec_id.keys())
     embed_params = {
         'batch_size': args.batch_size,
         'shuffle': True,
         'collate_fn': partial(custom_collate, ec_list=ec_list),
-        'num_workers': 1,
+        'num_workers': 4,
     }
     positive = mine_hard_positives(dist_map, 3)
     train_data = MoCo_dataset_with_mine_EC_and_SMILE(id_ec, ec_id, positive, with_ec_number=True, use_random_augmentation=args.use_random_augmentation, return_name=True, use_SMILE_cls_token=args.use_SMILE_cls_token)
