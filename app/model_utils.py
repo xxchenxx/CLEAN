@@ -55,10 +55,10 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 shape = raw.shape
                 raw = raw.reshape(-1, raw.shape[-1])
                 _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                smallest = torch.zeros_like(raw)
+                smallest = torch.zeros_like(raw).cpu()
                 for j in range(len(raw)):
                     smallest[j, smallest_value[j]] = 1
-                smallest = smallest.reshape(shape).bool()
+                smallest = smallest.reshape(shape).bool().to(raw.device)
                 raw = raw.reshape(shape)
                 raw[smallest] = raw[smallest] + float('-inf')
                 prob = torch.softmax(raw, -1) # N x 1
