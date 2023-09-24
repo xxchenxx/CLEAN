@@ -242,7 +242,7 @@ def main():
     best_loss = float('inf')
 
     learnable_k, attentions, attentions_optimizer = get_attention_modules(args, lr, device)
-    if args.use_value:
+    if args.use_v:
         query, key, value = attentions
     else:
         query, key = attentions
