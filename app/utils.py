@@ -105,7 +105,7 @@ def get_attention_modules(args, lr, device):
     if args.use_v:
         v = nn.Linear(args.esm_model_dim, args.esm_model_dim, bias=False).to(device)
         # nn.init.constant_(key.weight, 1e-3)
-        nn.init.normal_(key.weight, std=np.sqrt(2 / (2 *  args.esm_model_dim)))
+        nn.init.normal_(v.weight, std=np.sqrt(2 / (2 *  args.esm_model_dim)))
 
     if args.use_extra_attention:
         query = nn.Linear(args.esm_model_dim, args.attn_dim, bias=False).to(device)
