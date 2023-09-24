@@ -36,7 +36,7 @@ def generate_from_file(file, alphabet, esm_model, args, start_epoch=1, save=True
                     new_esm_emb[label] = out[args.repr_layer].mean(0).cpu()
     return new_esm_emb
 
-def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, attn_mask=None, return_prob=False):
+def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, attn_mask=None, return_prob=False, value=None):
     
     if len(feature.shape) == 2:
         if not args.use_extra_attention:
@@ -67,10 +67,16 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 prob = torch.softmax(weights, -1)
             else:
                 prob = torch.softmax(raw / np.sqrt(64), 1) # N x 1
-            if not return_prob:
-                return (prob @ feature).sum(0)
+            if value is not None:
+                if not return_prob:
+                    return (prob @ value(feature)).sum(0)
+                else:
+                    return (prob @ value(feature)).sum(0), prob, raw
             else:
-                return (prob @ feature).sum(0), prob, raw
+                if not return_prob:
+                    return (prob @ feature).sum(0)
+                else:
+                    return (prob @ feature).sum(0), prob, raw
     else: # 3-D features with paddings
         assert avg_mask is not None
         assert attn_mask is not None
@@ -101,7 +107,13 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
             prob = torch.softmax(weights, -1)
         else:
             prob = torch.softmax(raw / np.sqrt(64) + attn_mask, -1) 
-        multiplied = torch.bmm(prob, feature)
+        
+        if value is not None:
+            multiplied = torch.bmm(prob, value(feature))
+        else:
+            multiplied = torch.bmm(prob, feature)
+
+
         if not args.use_top_k_sum:
             if not return_prob:
                 return torch.sum(multiplied * avg_mask.unsqueeze(-1).repeat(1, 1, multiplied.shape[-1]), 1) # proj matrix is NxN

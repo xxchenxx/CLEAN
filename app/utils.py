@@ -103,22 +103,28 @@ def get_attention_modules(args, lr, device):
         learnable_k = None
 
     if args.use_v:
-        v = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
+        v = nn.Linear(args.esm_model_dim, args.esm_model_dim, bias=False).to(device)
         # nn.init.constant_(key.weight, 1e-3)
-        nn.init.normal_(key.weight, std=np.sqrt(2 / (64 + args.esm_model_dim)))
+        nn.init.normal_(key.weight, std=np.sqrt(2 / (2 *  args.esm_model_dim)))
 
     if args.use_extra_attention:
-        query = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
+        query = nn.Linear(args.esm_model_dim, args.attn_dim, bias=False).to(device)
         # nn.init.constant_(query.weight, 1e-3)
-        nn.init.normal_(query.weight, std=np.sqrt(2 / (64 + args.esm_model_dim)))
-        key = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
+        nn.init.normal_(query.weight, std=np.sqrt(2 / (args.attn_dim + args.esm_model_dim)))
+        key = nn.Linear(args.esm_model_dim, args.attn_dim, bias=False).to(device)
         # nn.init.constant_(key.weight, 1e-3)
-        nn.init.normal_(key.weight, std=np.sqrt(2 / (64 + args.esm_model_dim)))
+        nn.init.normal_(key.weight, std=np.sqrt(2 / (args.attn_dim + args.esm_model_dim)))
         if args.use_learnable_k:
             attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": args.attention_learning_rate, "weight_decay": args.attention_weight_decay, "momentum": 0.9}, {"params": learnable_k, "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay, }])
+        elif args.use_v:
+            attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}, {"params": key.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}, {"params": v.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}])
         else:
             attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}, {"params": key.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}])
-        attentions = [query, key]
+        if not args.use_v:
+            attentions = [query, key]
+        else:
+            attentions = [query, key, v]
+
     else:
         attentions = [None, None]
         attentions_optimizer = None
@@ -147,6 +153,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--use_extra_attention', action="store_true")
     parser.add_argument('--use_top_k', action="store_true")
+    parser.add_argument('--use_v', action="store_true")
     parser.add_argument('--use_top_k_sum', action="store_true")
     parser.add_argument('--use_learnable_k', action="store_true")
     parser.add_argument('--use_input_as_k', action="store_true")
@@ -158,6 +165,8 @@ def parse_args():
     parser.add_argument('--repr_layer', type=int, default=33)
     parser.add_argument('--lora_rank', type=int, default=16)
     parser.add_argument('--lora_alpha', type=int, default=16)
+    parser.add_argument('--attn_dim', type=int, default=64)
+    parser.add_argument('--queue_size', type=int, default=1000)
     parser.add_argument('--use_negative_smile', action="store_true")
     parser.add_argument('--use_random_augmentation', action="store_true")
     parser.add_argument('--use_weighted_loss', action="store_true")

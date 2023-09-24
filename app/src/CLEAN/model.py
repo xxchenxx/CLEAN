@@ -277,9 +277,9 @@ class Fuser(nn.Module):
 
 class MoCo_with_SMILE(nn.Module):
     def __init__(self, hidden_dim, out_dim, device, dtype, drop_out=0.1, esm_model_dim=1280, 
-                 use_negative_smile=False, smile_embedding_size = 384, fuse_mode = 'weighted_mean'):
+                 use_negative_smile=False, smile_embedding_size = 384, fuse_mode = 'weighted_mean', queue_size=1000):
         super(MoCo_with_SMILE, self).__init__()
-        self.K = 1000
+        self.K = queue_size
         self.m = 0.999
         self.T = 0.07
 

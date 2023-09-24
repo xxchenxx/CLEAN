@@ -93,7 +93,11 @@ def train(model, args, epoch, train_loader, static_embed_loader,
     total_loss = 0.
     start_time = time.time()
     esm_model.train()
-    query, key = attentions
+    if args.use_v:
+        query, key, value = attentions
+    else:
+        query, key = attentions
+        value = None
 
     for batch, data in enumerate(static_embed_loader):
         optimizer.zero_grad()
@@ -114,10 +118,10 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             anchor = torch.sum(anchor_original * anchor_avg_mask.unsqueeze(-1), 1)
         else:
             positive = forward_attentions(positive_original, query, key, learnable_k, args, avg_mask=positive_avg_mask,
-                                          attn_mask=positive_attn_mask)
+                                          attn_mask=positive_attn_mask, value=value)
             
             anchor = forward_attentions(anchor_original, query, key, learnable_k, args, avg_mask=anchor_avg_mask,
-                                          attn_mask=anchor_attn_mask)
+                                          attn_mask=anchor_attn_mask, value=value)
         if args.use_weighted_loss:
             output, target, aux_loss, metrics, buffer_ec, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile, ec_numbers)
             loss = torch.nn.functional.cross_entropy(output, target, reduction='none')
@@ -228,7 +232,7 @@ def main():
     esm_model.eval()
     
     #======================== initialize model =================#
-    model = MoCo_with_SMILE(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim, use_negative_smile=args.use_negative_smile, fuse_mode=args.fuse_mode).to(device)
+    model = MoCo_with_SMILE(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim, use_negative_smile=args.use_negative_smile, fuse_mode=args.fuse_mode, queue_size=args.queue_size).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.weight_decay, betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=0, last_epoch=-1, verbose=False)
     esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
@@ -238,7 +242,11 @@ def main():
     best_loss = float('inf')
 
     learnable_k, attentions, attentions_optimizer = get_attention_modules(args, lr, device)
-    query, key = attentions
+    if args.use_value:
+        query, key, value = attentions
+    else:
+        query, key = attentions
+        value = None
     # ======================== generate embed ================= #
     start_epoch = 1
 
@@ -328,7 +336,7 @@ def main():
                             for layer, t in representations.items()
                         }
                         feature = temp[args.repr_layer].cuda()                        
-                        train_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args)
+                        train_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args, value=value)
                             
             # train embedding construction
             train_esm_emb = []
@@ -396,7 +404,7 @@ def main():
                                 for layer, t in representations.items()
                             }
                             feature = temp[args.repr_layer].cuda()
-                            test_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args)
+                            test_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args, value=value)
                 
                 
                 total_ec_n, out_dim = len(ec_id_dict.keys()), train_esm_emb.size(1)
