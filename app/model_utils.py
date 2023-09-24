@@ -36,7 +36,7 @@ def generate_from_file(file, alphabet, esm_model, args, start_epoch=1, save=True
                     new_esm_emb[label] = out[args.repr_layer].mean(0).cpu()
     return new_esm_emb
 
-def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, attn_mask=None):
+def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, attn_mask=None, return_prob=False):
     
     if len(feature.shape) == 2:
         if not args.use_extra_attention:
@@ -49,9 +49,8 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 k = key(feature.mean(1, keepdim=True))
             else:
                 k = key(learnable_k)
-            if args.use_top_k:
-                raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
-                
+            raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
+            if args.use_top_k:                
                 shape = raw.shape
                 raw = raw.reshape(-1, raw.shape[-1])
                 _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
@@ -63,12 +62,15 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 raw[smallest] = raw[smallest] + float('-inf')
                 prob = torch.softmax(raw, -1) # N x 1
             elif args.use_top_k_sum:
-                raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
+                
                 weights = raw.sum(-2, keepdim=True)
                 prob = torch.softmax(weights, -1)
             else:
-                prob = torch.softmax(torch.einsum('jk,lk->jl', k, q) / np.sqrt(64), 1) # N x 1
-            return (prob @ feature).sum(0)
+                prob = torch.softmax(raw / np.sqrt(64), 1) # N x 1
+            if not return_prob:
+                return (prob @ feature).sum(0)
+            else:
+                return (prob @ feature).sum(0), prob, raw
     else: # 3-D features with paddings
         assert avg_mask is not None
         assert attn_mask is not None
@@ -79,8 +81,8 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
             k = key(feature.mean(1, keepdim=True))
         else:
             k = key(feature)
+        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64) + attn_mask
         if args.use_top_k:
-            raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64) + attn_mask
             shape = raw.shape
             raw = raw.reshape(-1, raw.shape[-1])
             _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
@@ -92,16 +94,22 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
             raw[smallest] = raw[smallest] + float('-inf')
             prob = torch.softmax(raw, -1) 
         elif args.use_top_k_sum:
-            raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64)
+            
             weights = raw.sum(-2, keepdim=True)
             for i in range(len(weights)):
                 weights[i, 0][avg_mask[i] == 0] = -float("inf")
             prob = torch.softmax(weights, -1)
         else:
-            prob = torch.softmax(torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64) + attn_mask, -1) 
+            prob = torch.softmax(raw / np.sqrt(64) + attn_mask, -1) 
         multiplied = torch.bmm(prob, feature)
         if not args.use_top_k_sum:
-            return torch.sum(multiplied * avg_mask.unsqueeze(-1).repeat(1, 1, multiplied.shape[-1]), 1) # proj matrix is NxN
+            if not return_prob:
+                return torch.sum(multiplied * avg_mask.unsqueeze(-1).repeat(1, 1, multiplied.shape[-1]), 1) # proj matrix is NxN
+            else:
+                return torch.sum(multiplied * avg_mask.unsqueeze(-1).repeat(1, 1, multiplied.shape[-1]), 1), prob
         else:
             assert multiplied.shape[1] == 1
-            return multiplied.squeeze(-2)
+            if not return_prob:
+                return multiplied.squeeze(-2)
+            else:
+                return multiplied.squeeze(-2), prob, raw

@@ -14,12 +14,15 @@ from CLEAN.distance_map import get_dist_map
 import torch
 import numpy as np
 import json
+import pandas as pd
 
 from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
 from Bio import SeqIO
 from torch.distributed.pipeline.sync import Pipe
 from torch.distributed.pipeline.sync.utils import partition_model
-
+from utils import save_state_dicts, get_logger, \
+    get_attention_modules, parse_args, calculate_distance_matrix_for_ecs, calculate_cosine_distance_matrix_for_ecs
+from model_utils import forward_attentions, generate_from_file
 def mine_hard_positives(dist_map, knn=10):
     #print("The number of unique EC numbers: ", len(dist_map.keys()))
     ecs = list(dist_map.keys())
@@ -60,30 +63,6 @@ def generate_from_file(file, alphabet, esm_model, args, start_epoch=1):
                     torch.save(out[args.repr_layer], args.temp_esm_path + f"/epoch{start_epoch}" + label + ".pt")
                     new_esm_emb[label] = out[args.repr_layer].mean(0).cpu()
     return new_esm_emb
-
-def parse():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-l', '--learning_rate', type=float, default=5e-4)
-    parser.add_argument('-e', '--epoch', type=int, default=2000)
-    parser.add_argument('-n', '--model_name', type=str, default='split10_triplet')
-    parser.add_argument('-t', '--training_data', type=str, default='split10')
-    parser.add_argument('-d', '--hidden_dim', type=int, default=512)
-    parser.add_argument('-o', '--out_dim', type=int, default=128)
-    parser.add_argument('--adaptive_rate', type=int, default=100)
-    parser.add_argument('--train_esm_rate', type=int, default=100)
-    parser.add_argument('--verbose', type=bool, default=False)
-    parser.add_argument('--use_extra_attention', action="store_true")
-    parser.add_argument('--use_top_k', action="store_true")
-    parser.add_argument('--use_top_k_sum', action="store_true")
-    parser.add_argument('--use_learnable_k', action="store_true")
-    parser.add_argument('--use_input_as_k', action="store_true")
-    parser.add_argument('--temp_esm_path', type=str, required=True)
-    parser.add_argument('--evaluate_freq', type=int, default=50)
-    parser.add_argument('--esm-model', type=str, default='esm1b_t33_650M_UR50S.pt')
-    parser.add_argument('--esm-model-dim', type=int, default=1280)
-    parser.add_argument('--repr-layer', type=int, default=33)
-    args = parser.parse_args()
-    return args
 
 from torch.nn.utils.rnn import pad_sequence
 
@@ -130,7 +109,7 @@ def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/
 def main():
     seed_everything()
     ensure_dirs('./data/model')
-    args = parse()
+    args, wandb_logger = parse_args()
     torch.backends.cudnn.benchmark = True
     #======================== override args ====================#
     use_cuda = torch.cuda.is_available()
@@ -156,32 +135,17 @@ def main():
     esm_model.eval()
     
     #======================== initialize model =================#
-    model = MoCo(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim).cuda()
-
-    if args.use_learnable_k:
-        learnable_k = nn.Parameter(torch.zeros(1, args.esm_model_dim).cuda())
-    else:
-        learnable_k = None
-
-    if args.use_extra_attention:
-        query = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
-        nn.init.zeros_(query.weight)
-        key = nn.Linear(args.esm_model_dim, 64, bias=False).to(device)
-        nn.init.zeros_(key.weight)
-        if args.use_learnable_k:
-            attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": lr, "momentum": 0.9}, {"params": learnable_k, "lr": lr, "momentum": 0.9}])
-        else:
-            attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": lr, "momentum": 0.9}])
-        attentions = [query, key]
-    else:
-        attentions = [None, None]
-        attentions_optimizer = None
+    model = MoCo_with_SMILE(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim, use_negative_smile=args.use_negative_smile, fuse_mode=args.fuse_mode).to(device)
     #======================== generate embed =================#
-    
-    esm_model.load_state_dict(torch.load("data/model/moco_esm_best_design1.pth"))
-    model.load_state_dict(torch.load("data/model/moco_best_design1.pth"))
-    query.load_state_dict(torch.load("data/model/moco_query_best_design1.pth"))
-    key.load_state_dict(torch.load("data/model/moco_key_best_design1.pth"))
+    learnable_k, attentions, attentions_optimizer = get_attention_modules(args, lr, device)
+    query, key = attentions
+
+    checkpoints = torch.load("data/model/best_with_negative_smile_random_smile_bs50_CLS_attn2_cosine_ranking_remap_new_alr_1e-4_1695415684.892955_checkpoints.pth.tar", map_location='cpu')
+
+
+    query.load_state_dict(checkpoints['query_state_dict'])
+    key.load_state_dict(checkpoints['key_state_dict'])
+
 
     dataset = FastaBatchedDataset.from_file(
         './data/split10.fasta')
@@ -191,8 +155,9 @@ def main():
         dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
     )
     probs = {}
+    seqs = {}
     for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-        if batch_idx > 100: break
+        # if batch_idx > 10: break
         print(
             f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
         )
@@ -205,47 +170,26 @@ def main():
 
         for i, label in enumerate(labels):
             token_lens = batch_lens[i]
-            print(token_lens)
             temp = {
                 layer: t[i, 1 : token_lens - 1].clone()
                 for layer, t in representations.items()
             }
             feature = temp[args.repr_layer].cuda()
-            q = query(feature)
-            if learnable_k is None:
-                k = key(feature)
-            elif args.use_input_as_k:
-                k = key(feature.mean(1, keepdim=True))
-            else:
-                k = key(learnable_k)
-            if args.use_top_k:
-                raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
-                
-                shape = raw.shape
-                raw = raw.reshape(-1, raw.shape[-1])
-                _, smallest_value = torch.topk(raw, max(0, raw.shape[1] - 100), largest=False)
-                smallest = torch.zeros_like(raw)
-                for j in range(len(raw)):
-                    smallest[j, smallest_value[j]] = 1
-                smallest = smallest.reshape(shape).bool()
-                raw = raw.reshape(shape)
-                raw[smallest] = raw[smallest] + float('-inf')
-                prob = torch.softmax(raw, -1) # N x 1
-            elif args.use_top_k_sum:
-                raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
-                weights = raw.sum(-2, keepdim=True)
-                prob = torch.softmax(weights, -1)
-            else:
-                prob = torch.softmax(torch.einsum('jk,lk->jl', k, q) / np.sqrt(64), 1) # N x 1
+            _, prob, raw = forward_attentions(feature, query, key, learnable_k, args, return_prob=True)
+            # print(prob)
+            # print(raw)
             probs[label] = prob.clone().detach().cpu()
-    print(probs)
+            seqs[label] = strs[i]
+    # print(probs)
     ec = pd.read_csv("data/training_data_10_parsed.csv", sep=',')
     result = {}
     import matplotlib.pyplot as plt
     f = open("split10_result.json", "w")
     for label in probs:
+        print(probs[label].shape)
         prob_sum = torch.sum(probs[label], 0)
-        important = torch.argsort(prob_sum, 0, descending=True)[:64]
+        # print(prob_sum)
+        # continue
         ec_number = ec.loc[ec['UniprotID'] == label, 'EC number'].iloc[0]
         pdb = ec.loc[ec['UniprotID'] == label, 'parsed_PDB'].iloc[0]
         if 'AF' in pdb:
@@ -254,6 +198,11 @@ def main():
                 print(pdb)
                 values = list(map(lambda x: float(x.strip()), open(f"/mnt/vita-nas/xuxi/predicted_active_sites/{pdb}-predictions.txt", "r").readlines()))
                 values = np.array(values)
+                print(prob_sum.numpy())
+                print(values)
+                df = {"attn": list(prob_sum.numpy()), "site": list(values), "seq": list(seqs[label])}
+                pd.DataFrame(df).to_csv(f"alignments/{pdb}.csv", index=False)
+                """
                 order = np.argsort(-values)[:min(40, int(len(values) * 0.4))]
 
                 prob_sum = prob_sum.detach().numpy()
@@ -272,9 +221,11 @@ def main():
                 plt.imshow(bin_mask.reshape(1, -1), aspect='auto')
                 plt.savefig(f"vis/{label}.png")
                 plt.close()
+                """
                 # assert False
-        line = {"label": label, 'EC number': ec_number, "position": str(list(important[:10].detach().cpu().numpy() + 1))}
-        f.write(json.dumps(line)+'\n')
+        print("\n\n\n")
+        # line = {"label": label, 'EC number': ec_number, "position": str(list(important[:10].detach().cpu().numpy() + 1))}
+        # f.write(json.dumps(line)+'\n')
     torch.save(probs, 'split10_probs.pth')
 if __name__ == '__main__':
     main()
