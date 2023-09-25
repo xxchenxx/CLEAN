@@ -242,6 +242,7 @@ def main():
     best_loss = float('inf')
 
     learnable_k, attentions, attentions_optimizer = get_attention_modules(args, lr, device)
+    attn_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(attentions_optimizer, T_max=args.epoch, eta_min=0, last_epoch=-1, verbose=False)
     if args.use_v:
         query, key, value = attentions
     else:
@@ -480,6 +481,7 @@ def main():
                            ec_number_classifier=ec_number_classifier, ec_classifier_optimizer=ec_classifier_optimizer,
                            score_matrix=score_matrix, cosine_score_matrix=cosine_score_matrix)
         scheduler.step()
+        attn_scheduler.step()
         # only save the current best model near the end of training
         if (train_loss < best_loss):
             save_state_dicts(model, esm_model, query, key,
