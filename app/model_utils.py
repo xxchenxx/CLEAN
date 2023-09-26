@@ -49,7 +49,7 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 k = key(feature.mean(1, keepdim=True))
             else:
                 k = key(learnable_k)
-            raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(64)
+            raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(k.shape[-1])
             if args.use_top_k:                
                 shape = raw.shape
                 raw = raw.reshape(-1, raw.shape[-1])
@@ -66,7 +66,7 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 weights = raw.sum(-2, keepdim=True)
                 prob = torch.softmax(weights, -1)
             else:
-                prob = torch.softmax(raw / np.sqrt(64), 1) # N x 1
+                prob = torch.softmax(raw, 1) # N x 1
             if value is not None:
                 if not return_prob:
                     return (prob @ value(feature)).sum(0)
@@ -87,7 +87,7 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
             k = key(feature.mean(1, keepdim=True))
         else:
             k = key(feature)
-        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(64) + attn_mask
+        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(k.shape[-1]) + attn_mask
         if args.use_top_k:
             shape = raw.shape
             raw = raw.reshape(-1, raw.shape[-1])
@@ -106,7 +106,7 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 weights[i, 0][avg_mask[i] == 0] = -float("inf")
             prob = torch.softmax(weights, -1)
         else:
-            prob = torch.softmax(raw / np.sqrt(64) + attn_mask, -1) 
+            prob = torch.softmax(raw, -1) 
         
         if value is not None:
             multiplied = torch.bmm(prob, value(feature))
