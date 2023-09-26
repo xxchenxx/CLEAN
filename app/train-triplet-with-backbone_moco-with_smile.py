@@ -307,10 +307,9 @@ def main():
             if smile_embed is None:
                 smile_embed = torch.load("Rhea_tensors.pt", map_location='cpu')
                 rhea_map = pd.read_csv("rhea2ec.tsv", sep='\t')  
-
                 if args.use_SMILE_cls_token:
-                for key in smile_embed:
-                    smile_embed[key] = [l[:1] for l in smile_embed[key]]
+                    for key_ in smile_embed:
+                        smile_embed[key_] = [l[:1] for l in smile_embed[key_]]
 
             train_protein_emb = {}
             dataset = FastaBatchedDataset.from_file(
