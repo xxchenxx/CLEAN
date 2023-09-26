@@ -373,8 +373,8 @@ def main():
 
             
             train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
-            cluster_center_model = get_cluster_center(
-                train_esm_emb, ec_id_dict)
+            train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
+            cluster_center_model = get_cluster_center(train_esm_emb, ec_id_dict)
             # test embedding construction
             for eval_dataset in ['price', 'new', 'halogenase']:
                 dataset = FastaBatchedDataset.from_file(
@@ -526,12 +526,11 @@ def main():
                         current_train_esm_emb = sum(train_esm_emb_i) / len(train_esm_emb_i)
 
                 train_esm_emb = train_esm_emb + [current_train_esm_emb]
-
+            train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
             if args.remap:
-                train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
                 dist_map = get_dist_map(
                     ec_id_dict, train_esm_emb, device, dtype)
-            train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
+                train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
             cluster_center_model = get_cluster_center(
                 train_esm_emb, ec_id_dict)
             # test embedding construction
