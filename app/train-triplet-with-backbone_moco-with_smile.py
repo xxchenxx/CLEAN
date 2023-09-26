@@ -371,10 +371,7 @@ def main():
 
                 train_esm_emb = train_esm_emb + [current_train_esm_emb]
 
-            if args.remap:
-                train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
-                dist_map = get_dist_map(
-                    ec_id_dict, train_esm_emb, device, dtype)
+            
             train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
             cluster_center_model = get_cluster_center(
                 train_esm_emb, ec_id_dict)
@@ -437,7 +434,7 @@ def main():
                                     pass
   
                     if len(smile_embeds) == 0:
-                        smile_embeds = torch.zeros((1, 384))
+                        smile_embeds = [torch.zeros((1, 384))]
 
                     current_smile_embeds = [smile_embed_ec.unsqueeze(0).repeat(test_protein_emb.shape[0], 1, 1).cuda().mean(1) for smile_embed_ec in smile_embeds]
                     # print(current_smile_embed.shape)
@@ -477,6 +474,155 @@ def main():
                 except:
                     pass
 
+
+            train_protein_emb = {}
+            dataset = FastaBatchedDataset.from_file(
+                './data/' + args.training_data + '.fasta')
+            batches = dataset.get_batch_indices(
+                4096, extra_toks_per_seq=1)
+            data_loader = torch.utils.data.DataLoader(
+                dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
+            )
+
+            with torch.no_grad():
+                for batch_idx, (labels, strs, toks) in enumerate(data_loader):
+                    batch_lens = (toks != alphabet.padding_idx).sum(1)
+                    if batch_idx % 100 == 0:
+                        logger.info(
+                            f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
+                        )
+                    toks = toks.to(device="cuda", non_blocking=True)
+                    out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
+                    representations = {
+                        layer: t.to(device="cpu") for layer, t in out["representations"].items()
+                    }
+
+                    for i, label in enumerate(labels):
+                        tokens_len = batch_lens[i]
+                        temp = {
+                            layer: t[i, 1 : tokens_len - 1].clone()
+                            for layer, t in representations.items()
+                        }
+                        feature = temp[args.repr_layer].cuda()                        
+                        train_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args, value=value)
+                            
+            # train embedding construction
+            train_esm_emb = []
+            for ec in list(ec_id_dict.keys()):
+                ids_for_query = list(ec_id_dict[ec])
+                rhea_id = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values
+                smile_embed_ec = []
+                protein_emb_stacked = torch.stack([train_protein_emb[id] for id in ids_for_query]).to(device) # protein embed with same EC 
+                if len(smile_embed_ec) == 0:
+                    smile_embed_ec = torch.stack([torch.zeros(384, device=device) for _ in ids_for_query])
+                    current_train_esm_emb = model.encoder_q(model.fuser(protein_emb_stacked, smile_embed_ec))
+                else:
+                    if not args.use_random_augmentation:
+                        smile_embed_ec = torch.cat(smile_embed_ec, 0).mean(0, keepdims=True).repeat(len(ids_for_query), 1).to(device)
+                        current_train_esm_emb = model.encoder_q(model.fuser(protein_emb_stacked, smile_embed_ec))
+                    else:
+                        smile_embed_ec = [embed.mean(0, keepdims=True).repeat(len(ids_for_query), 1).to(device) for embed in smile_embed_ec]
+                        train_esm_emb_i = [model.encoder_q(model.fuser(protein_emb_stacked, embed)) for embed in smile_embed_ec]
+                        current_train_esm_emb = sum(train_esm_emb_i) / len(train_esm_emb_i)
+
+                train_esm_emb = train_esm_emb + [current_train_esm_emb]
+
+            if args.remap:
+                train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
+                dist_map = get_dist_map(
+                    ec_id_dict, train_esm_emb, device, dtype)
+            train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
+            cluster_center_model = get_cluster_center(
+                train_esm_emb, ec_id_dict)
+            # test embedding construction
+            for eval_dataset in ['price', 'new', 'halogenase']:
+                dataset = FastaBatchedDataset.from_file(
+                    f'./data/{eval_dataset}.fasta')
+                batches = dataset.get_batch_indices(
+                    4096, extra_toks_per_seq=1)
+                data_loader = torch.utils.data.DataLoader(
+                    dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
+                )
+
+                test_protein_emb = {}
+                with torch.no_grad():
+                    for batch_idx, (labels, strs, toks) in enumerate(data_loader):
+                        if batch_idx % 100 == 0:
+                            logger.info(
+                                f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
+                            )
+                        toks = toks.to(device="cuda", non_blocking=True)
+                        out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
+                        representations = {
+                            layer: t.to(device="cpu") for layer, t in out["representations"].items()
+                        }
+                        batch_lens = (toks != alphabet.padding_idx).sum(1)
+                        
+                        for i, label in enumerate(labels):
+                            temp = {
+                                layer: t[i, 1 : batch_lens[i] - 1].clone()
+                                for layer, t in representations.items()
+                            }
+                            feature = temp[args.repr_layer].cuda()
+                            test_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args, value=value)
+                
+                
+                total_ec_n, out_dim = len(ec_id_dict.keys()), train_esm_emb.size(1)
+                model_lookup = torch.zeros(total_ec_n, out_dim, device=device, dtype=dtype)
+                ecs = list(cluster_center_model.keys())
+                id_ec_test, ec_id_dict_test = get_ec_id_dict(f'./data/{eval_dataset}.csv')
+                ids_for_query = list(id_ec_test.keys())
+                test_protein_emb_to_cat = [test_protein_emb[id] for id in ids_for_query]
+                test_protein_emb = torch.stack(test_protein_emb_to_cat)
+
+                for i, ec in enumerate(ecs):
+                    model_lookup[i] = cluster_center_model[ec]
+                
+                ids = list(id_ec_test.keys())
+                dist = {}
+                for ec in tqdm(list(ec_id_dict.keys())):
+                    rhea_ids = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values
+                    smile_embeds = []
+                    if len(smile_embeds) == 0:
+                        smile_embeds = [torch.zeros((1, 384))]
+
+                    current_smile_embeds = [smile_embed_ec.unsqueeze(0).repeat(test_protein_emb.shape[0], 1, 1).cuda().mean(1) for smile_embed_ec in smile_embeds]
+                    # print(current_smile_embed.shape)
+
+                    test_protein_emb_i = [model.encoder_q(model.fuser(test_protein_emb, current_smile_embed)) for current_smile_embed in current_smile_embeds]
+
+                    # eval_dist = dist_map_helper(ids, test_protein_emb, ecs, model_lookup)
+                    
+                    for i, key1 in enumerate(ids):
+                        dist_norm = [(test_protein_emb_i[j][i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2) for j in range(len(current_smile_embeds))]
+                        dist_norm = torch.stack(dist_norm).mean(0).detach().cpu().numpy()
+                        # print(dist_norm)
+                        if key1 not in dist:
+                            dist[key1] = {}
+                        dist[key1][ec] = dist_norm
+                    
+                eval_dist = dist
+                eval_df = pd.DataFrame.from_dict(eval_dist)
+                eval_df = eval_df.astype(float)
+                out_filename = f"results/{eval_dataset}_{args.model_name}" 
+                write_max_sep_choices(eval_df, out_filename, gmm=None)
+                
+                pred_label = get_pred_labels(out_filename, pred_type='_maxsep')
+                pred_probs = get_pred_probs(out_filename, pred_type='_maxsep')
+                true_label, all_label = get_true_labels(f'./data/{eval_dataset}')
+                try:
+                    pre, rec, f1, roc, acc = get_eval_metrics(
+                        pred_label, pred_probs, true_label, all_label)
+
+                    logger.info(f'total samples: {len(true_label)} | total ec: {len(all_label)}')
+                    logger.info(f'precision: {pre:.3} | recall: {rec:.3} | F1: {f1:.3} | AUC: {roc:.3} ')
+                    wandb_logger.log({f'eval_no_smile/{eval_dataset}/precision': pre, 
+                                    f'eval_no_smile/{eval_dataset}/recall': rec,
+                                    f'eval_no_smile/{eval_dataset}/F1': f1,
+                                    f'eval_no_smile/{eval_dataset}/AUC': roc,
+                                    f'eval_no_smile/{eval_dataset}/acc': acc})
+                except:
+                    pass
 
         # assert False
         # -------------------------------------------------------------------- #
