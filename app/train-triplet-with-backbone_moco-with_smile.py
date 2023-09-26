@@ -308,6 +308,10 @@ def main():
                 smile_embed = torch.load("Rhea_tensors.pt", map_location='cpu')
                 rhea_map = pd.read_csv("rhea2ec.tsv", sep='\t')  
 
+                if args.use_SMILE_cls_token:
+                for key in smile_embed:
+                    smile_embed[key] = [l[:1] for l in smile_embed[key]]
+
             train_protein_emb = {}
             dataset = FastaBatchedDataset.from_file(
                 './data/' + args.training_data + '.fasta')

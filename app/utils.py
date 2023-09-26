@@ -160,6 +160,7 @@ def parse_args():
     parser.add_argument('--use_learnable_k', action="store_true")
     parser.add_argument('--use_input_as_k', action="store_true")
     parser.add_argument('--temp_esm_path', type=str, required=True)
+    parser.add_argument('--checkpoint', type=str, default=None)
     parser.add_argument('--distance_path', type=str, default='./data/distance_map/')
     parser.add_argument('--evaluate_freq', type=int, default=50)
     parser.add_argument('--esm_model', type=str, default='esm1b_t33_650M_UR50S.pt')

@@ -297,9 +297,13 @@ class MoCo_dataset_with_mine_EC_and_SMILE(torch.utils.data.Dataset):
 
         if self.negative_mode == 'random': 
             count = 0 
+            pos_rhea = []
+            for j in range(1, 4):
+                for r in rhea:
+                    pos_rhea.append(r + j)
             while True:
                 rhea_id_neg = random.choice(self.rhea_keys)
-                if rhea_id_neg not in rhea:
+                if rhea_id_neg not in pos_rhea:
                     break
                 count += 1
                 if count > 5:
