@@ -50,7 +50,7 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
             else:
                 k = key(feature)
 
-            raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(k.shape[-1])
+            raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(q.shape[-1])
             if args.use_top_k:                
                 shape = raw.shape
                 raw = raw.reshape(-1, raw.shape[-1])
@@ -88,7 +88,7 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
             k = key(feature.mean(1, keepdim=True))
         else:
             k = key(feature)
-        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(k.shape[-1]) + attn_mask
+        raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(q.shape[-1]) + attn_mask
         if args.use_top_k:
             shape = raw.shape
             raw = raw.reshape(-1, raw.shape[-1])
@@ -119,7 +119,7 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
             if not return_prob:
                 return torch.sum(multiplied * avg_mask.unsqueeze(-1).repeat(1, 1, multiplied.shape[-1]), 1) # proj matrix is NxN
             else:
-                return torch.sum(multiplied * avg_mask.unsqueeze(-1).repeat(1, 1, multiplied.shape[-1]), 1), prob
+                return torch.sum(multiplied * avg_mask.unsqueeze(-1).repeat(1, 1, multiplied.shape[-1]), 1), prob, raw
         else:
             assert multiplied.shape[1] == 1
             if not return_prob:

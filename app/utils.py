@@ -108,12 +108,14 @@ def get_attention_modules(args, lr, device):
         nn.init.normal_(v.weight, std=np.sqrt(2 / (2 *  args.esm_model_dim)))
 
     if args.use_extra_attention:
+        std = 0.02
+        # std = np.sqrt(2 / (args.attn_dim + args.esm_model_dim))
         query = nn.Linear(args.esm_model_dim, args.attn_dim, bias=False).to(device)
         # nn.init.constant_(query.weight, 1e-3)
-        nn.init.normal_(query.weight, std=np.sqrt(2 / (args.attn_dim + args.esm_model_dim)))
+        nn.init.normal_(query.weight, std=std)
         key = nn.Linear(args.esm_model_dim, args.attn_dim, bias=False).to(device)
         # nn.init.constant_(key.weight, 1e-3)
-        nn.init.normal_(key.weight, std=np.sqrt(2 / (args.attn_dim + args.esm_model_dim)))
+        nn.init.normal_(key.weight, std=std)
         if args.use_learnable_k:
             attentions_optimizer = torch.optim.Adam([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": args.attention_learning_rate, "weight_decay": args.attention_weight_decay, "momentum": 0.9}, {"params": learnable_k, "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay, }])
         elif args.use_v:

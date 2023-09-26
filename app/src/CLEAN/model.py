@@ -36,6 +36,7 @@ class LayerNormNet(nn.Module):
         self.fc3 = nn.Linear(hidden_dim, out_dim, dtype=dtype, device=device)
         self.dropout = nn.Dropout(p=drop_out)
 
+
     def forward(self, x):
         x = self.dropout(self.ln1(self.fc1(x)))
         x = torch.relu(x)
@@ -148,6 +149,24 @@ class MoCo(nn.Module):
 
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
+        def _init_weights(self, module):
+            """Initialize the weights"""
+            if isinstance(module, nn.Linear):
+                # Slightly different from the TF version which uses truncated_normal for initialization
+                # cf https://github.com/pytorch/pytorch/pull/5617
+                module.weight.data.normal_(mean=0.0, std=0.02)
+                if module.bias is not None:
+                    module.bias.data.zero_()
+            elif isinstance(module, nn.Embedding):
+                module.weight.data.normal_(mean=0.0, std=0.02)
+                if module.padding_idx is not None:
+                    module.weight.data[module.padding_idx].zero_()
+            elif isinstance(module, nn.LayerNorm):
+                module.bias.data.zero_()
+                module.weight.data.fill_(1.0)
+        
+        self.apply(self._init_weights)
+            
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
         """

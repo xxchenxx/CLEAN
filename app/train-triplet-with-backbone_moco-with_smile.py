@@ -424,11 +424,15 @@ def main():
                 for ec in tqdm(list(ec_id_dict.keys())):
                     rhea_ids = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values
                     smile_embeds = []
-                    for rhea_id in rhea_ids:
-                        try:
-                            smile_embeds.extend(smile_embed[str(rhea_id)])
-                        except:
-                            pass
+
+                    if len(rhea_ids) > 0:
+                        for rid in rhea_ids:
+                            for j in range(4):
+                                try:
+                                    smile_embeds.extend(smile_embed[str(rid + j)])
+                                except:
+                                    pass
+  
                     if len(smile_embeds) == 0:
                         smile_embeds = torch.zeros((1, 384))
 
