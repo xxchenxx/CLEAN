@@ -383,14 +383,18 @@ class MoCo_with_SMILE(nn.Module):
         fused_im_q = self.fuser(im_q, smile)
         fused_im_k = self.fuser(im_k, smile)
         metrics = {}
+        print(im_q)
+        print(smile)
         if self.use_negative_smile:
             metrics['negative_smile_mean'] = negative_smile.mean()
             metrics['smile_mean'] = smile.mean()
             negative_im_q = self.fuser(im_q, negative_smile)
-
+            print(fused_im_q)
+            print(negative_im_q)
             concat_labels = torch.cat([torch.ones(negative_im_q.shape[0]), torch.zeros(im_q.shape[0])]).to(negative_im_q.device).long()
             concat_im_q = torch.cat([fused_im_q, negative_im_q], 0)
             concat_logits = self.negative_classifier(concat_im_q)
+            print(concat_logits)
             aux_loss = torch.nn.functional.cross_entropy(concat_logits, concat_labels)
             metrics['negative_classifier_accuracy'] = (torch.argmax(concat_logits, 1) == concat_labels).float().mean(0)
             metrics['aux_loss'] = aux_loss

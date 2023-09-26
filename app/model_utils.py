@@ -70,14 +70,14 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 prob = torch.softmax(raw, 1) # N x 1
             if value is not None:
                 if not return_prob:
-                    return (prob @ value(feature)).sum(0)
+                    return (prob @ value(feature)).mean(0)
                 else:
-                    return (prob @ value(feature)).sum(0), prob, raw
+                    return (prob @ value(feature)).mean(0), prob, raw
             else:
                 if not return_prob:
-                    return (prob @ feature).sum(0)
+                    return (prob @ feature).mean(0)
                 else:
-                    return (prob @ feature).sum(0), prob, raw
+                    return (prob @ feature).mean(0), prob, raw
     else: # 3-D features with paddings
         assert avg_mask is not None
         assert attn_mask is not None
