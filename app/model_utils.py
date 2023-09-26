@@ -43,12 +43,13 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
             return feature.mean(0)
         else:
             q = query(feature)
-            if learnable_k is None:
-                k = key(feature)
+            if learnable_k is not None:
+                k = key(learnable_k)
             elif args.use_input_as_k:
                 k = key(feature.mean(1, keepdim=True))
             else:
-                k = key(learnable_k)
+                k = key(feature)
+
             raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(k.shape[-1])
             if args.use_top_k:                
                 shape = raw.shape
