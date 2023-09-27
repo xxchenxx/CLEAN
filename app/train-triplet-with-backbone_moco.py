@@ -145,7 +145,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             loss += 1e-6 * loss_distance
             metrics['distance_loss'] = 1e-6 * loss_distance
         elif args.use_cosine_ranking_loss:
-            output, target, aux_loss, metrics, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
+            output, target, aux_loss, metrics, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
             loss = criterion(output, target)
             distances = q @ q.transpose(0, 1)
             distance_values = distances.detach().cpu().numpy()
