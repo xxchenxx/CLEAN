@@ -149,7 +149,9 @@ class MoCo(nn.Module):
 
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
-        def _init_weights(self, module):
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
             """Initialize the weights"""
             if isinstance(module, nn.Linear):
                 # Slightly different from the TF version which uses truncated_normal for initialization
@@ -165,7 +167,6 @@ class MoCo(nn.Module):
                 module.bias.data.zero_()
                 module.weight.data.fill_(1.0)
         
-        self.apply(self._init_weights)
             
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
@@ -330,6 +331,24 @@ class MoCo_with_SMILE(nn.Module):
                 nn.ReLU(),
                 nn.Linear(64, 2)
             )
+
+        self.apply(self._init_weights)
+        
+    def _init_weights(self, module):
+            """Initialize the weights"""
+            if isinstance(module, nn.Linear):
+                # Slightly different from the TF version which uses truncated_normal for initialization
+                # cf https://github.com/pytorch/pytorch/pull/5617
+                module.weight.data.normal_(mean=0.0, std=0.02)
+                if module.bias is not None:
+                    module.bias.data.zero_()
+            elif isinstance(module, nn.Embedding):
+                module.weight.data.normal_(mean=0.0, std=0.02)
+                if module.padding_idx is not None:
+                    module.weight.data[module.padding_idx].zero_()
+            elif isinstance(module, nn.LayerNorm):
+                module.bias.data.zero_()
+                module.weight.data.fill_(1.0)
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
