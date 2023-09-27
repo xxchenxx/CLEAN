@@ -144,6 +144,20 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             loss_distance = torch.sum(m)
             loss += 1e-6 * loss_distance
             metrics['distance_loss'] = 1e-6 * loss_distance
+        elif args.use_cosine_ranking_loss:
+            output, target, aux_loss, metrics, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), smile, negative_smile)
+            loss = criterion(output, target)
+            distances = q @ q.transpose(0, 1)
+            distance_values = distances.detach().cpu().numpy()
+            metrics['distance_values'] = wandb.Histogram(distance_values)
+            label_distances = torch.zeros_like(distances)
+            for i in range(len(output)):
+                for j in range(len(output)):
+                    label_distances[i, j] = cosine_score_matrix[ec_numbers[i], ec_numbers[j]]
+            m = torch.clamp(label_distances * distances - 1, min=0)
+            loss_distance = torch.mean(m)
+            loss += args.distance_loss_coef * loss_distance / (output.shape[0] ** 2) 
+            metrics['distance_loss'] = args.distance_loss_coef * loss_distance
         else:
             output, target = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
             loss = criterion(output, target)
