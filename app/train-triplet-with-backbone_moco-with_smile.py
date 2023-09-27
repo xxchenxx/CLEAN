@@ -297,6 +297,16 @@ def main():
     logger.info(f"The number of unique EC numbers: {len(dist_map.keys())}")
     train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
     
+    if args.checkpoint is not None:
+        checkpoints = torch.load(args.checkpoint, map_location='cpu')
+        print(checkpoints['query_state_dict'])
+
+        query.load_state_dict(checkpoints['query_state_dict'])
+        key.load_state_dict(checkpoints['key_state_dict'])
+        model.load_state_dict(checkpoints['model_state_dict'])
+
+        print(checkpoints['model_state_dict'].keys())
+
     #======================== training =======-=================#
     # training
     for epoch in range(start_epoch, epochs + 1):
