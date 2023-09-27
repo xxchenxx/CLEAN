@@ -245,9 +245,9 @@ class MoCo(nn.Module):
         self._dequeue_and_enqueue(k, ec_numbers)
 
         if ec_numbers is None:
-            return logits, labels
+            return logits, labels, q
         else:
-            return logits, labels, self.ec_number_labels
+            return logits, labels, self.ec_number_labels, q
 
 class WeightedMeanFeatureFuser(nn.Module):
     def __init__(self, n_modality,l_dim):
