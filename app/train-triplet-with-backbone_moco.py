@@ -115,23 +115,8 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             
             anchor = forward_attentions(anchor_original, query, key, learnable_k, args, avg_mask=anchor_avg_mask, attn_mask=anchor_attn_mask)
         metrics = {}
-        if args.use_weighted_loss:
-            output, target, buffer_ec = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype), ec_numbers)
-            loss = torch.nn.functional.cross_entropy(output, target, reduction='none')
-            predicted = torch.argmax(output, 1)
-            weights = []
-            for i in range(len(predicted)):
-                if predicted[i] == 0:
-                    weights.append(1)
-                else:
-                    if buffer_ec[predicted[i] - 1] is None:
-                        weights.append(1)
-                    else:
-                        weights.append(score_matrix[buffer_ec[predicted[i] - 1]][ec_numbers[i]])
-            weights = torch.tensor(weights).cuda()
-            loss = (loss * weights).mean()
-        elif args.use_ranking_loss:
-            output, target = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
+        if args.use_ranking_loss:
+            output, target, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
             loss = criterion(output, target)
             distances = torch.cdist(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
             metrics['distance_values'] = wandb.Histogram(distances.detach().cpu().numpy())
@@ -159,7 +144,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             loss += args.distance_loss_coef * loss_distance / (output.shape[0] ** 2) 
             metrics['distance_loss'] = args.distance_loss_coef * loss_distance
         else:
-            output, target = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
+            output, target, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
             loss = criterion(output, target)
         metrics['loss'] = loss.item()
         aux_loss = 0
