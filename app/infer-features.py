@@ -303,6 +303,7 @@ def main():
                             
             # train embedding construction
             train_esm_emb = []
+            stored_labels = []
             for ec in list(ec_id_dict.keys()):
                 ids_for_query = list(ec_id_dict[ec])
                 rhea_id = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values
@@ -329,9 +330,9 @@ def main():
                         current_train_esm_emb = sum(train_esm_emb_i) / len(train_esm_emb_i)
 
                 train_esm_emb = train_esm_emb + [current_train_esm_emb]
-
+                stored_labels.extend([ec] * len(ids_for_query))
             train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
-            torch.save(train_esm_emb.detach().cpu().numpy(), 'extracted_features.pth.tar')
+            torch.save([train_esm_emb.detach().cpu().numpy(), stored_labels], 'extracted_features.pth.tar')
             
                 
     wandb_logger.finish()
