@@ -450,11 +450,12 @@ def main():
                     # print(current_smile_embed.shape)
 
                     test_protein_emb_i = [model.encoder_q(model.fuser(test_protein_emb, current_smile_embed)) for current_smile_embed in current_smile_embeds]
-
+                    test_protein_emb_ = sum(test_protein_emb_i) / len(test_protein_emb_i)
                     # eval_dist = dist_map_helper(ids, test_protein_emb, ecs, model_lookup)
                     
                     for i, key1 in enumerate(ids):
-                        dist_norm = [(test_protein_emb_i[j][i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2) for j in range(len(current_smile_embeds))]
+                        # dist_norm = [(test_protein_emb_i[j][i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2) for j in range(len(current_smile_embeds))]
+                        dist_norm = (test_protein_emb_[i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2)
                         dist_norm = torch.stack(dist_norm).mean(0).detach().cpu().numpy()
                         # print(dist_norm)
                         if key1 not in dist:
