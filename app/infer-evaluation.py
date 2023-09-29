@@ -340,7 +340,7 @@ def main():
             # torch.save(cluster_center_model, "cluster_center_model.pth")
 
             # test embedding construction
-            for eval_dataset in ['price']:#, 'new', 'halogenase']:
+            for eval_dataset in ['CATH']:# ['price']:#, 'new', 'halogenase']:
                 dataset = FastaBatchedDataset.from_file(
                     f'./data/{eval_dataset}.fasta')
                 batches = dataset.get_batch_indices(
