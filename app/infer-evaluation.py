@@ -207,7 +207,7 @@ def main():
     score_matrix = calculate_distance_matrix_for_ecs(ec_id_dict)
     cosine_score_matrix = calculate_cosine_distance_matrix_for_ecs(ec_id_dict)
     seq_dict = {rec.id : rec.seq for rec in SeqIO.parse(f'./data/{args.training_data}.fasta', "fasta")}
-    seq_dict.update({rec.id : rec.seq for rec in SeqIO.parse(f'./data/{args.training_data}_single_seq_ECs.fasta', "fasta")})
+    # seq_dict.update({rec.id : rec.seq for rec in SeqIO.parse(f'./data/{args.training_data}_single_seq_ECs.fasta', "fasta")})
 
     #======================== override args ====================#
     use_cuda = torch.cuda.is_available()
@@ -242,7 +242,6 @@ def main():
     best_loss = float('inf')
 
     learnable_k, attentions, attentions_optimizer = get_attention_modules(args, lr, device)
-    attn_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(attentions_optimizer, T_max=args.epoch, eta_min=0, last_epoch=-1, verbose=False)
     if args.use_v:
         query, key, value = attentions
     else:
@@ -251,76 +250,26 @@ def main():
     # ======================== generate embed ================= #
     start_epoch = 1
 
-    if True:
-        new_esm_emb = {}
 
-        file_1 = open('./data/' + args.training_data + '.fasta')
-        file_2 = open('./data/' + args.training_data + '_single_seq_ECs.fasta')
-        dict1 = SeqIO.to_dict(SeqIO.parse(file_1, "fasta"))
-        dict2 = SeqIO.to_dict(SeqIO.parse(file_2, "fasta"))
-        original = len(list(dict1.keys()))
-        
-        for key_ in list(dict1.keys()):
-            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
-                del dict1[key_]
-                # print(f"{key_} founded!")
-                new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt").mean(0).detach().cpu()
-        remain = len(dict1)
-        logger.info(f"Need to parse {remain}/{original}")
-        with open(f'temp_{args.training_data}.fasta', 'w') as handle:
-            SeqIO.write(dict1.values(), handle, 'fasta')
 
-        new_esm_emb_created = generate_from_file(f'temp_{args.training_data}.fasta', alphabet, esm_model, args, start_epoch)
-        new_esm_emb.update(new_esm_emb_created)
-        original = len(list(dict2.keys()))
-        for key_ in list(dict2.keys()):
-            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
-                del dict2[key_]
-        
-        remain = len(dict2)
-        logger.info(f"Need to parse {remain}/{original}")
+    checkpoints = torch.load(args.checkpoint, map_location='cpu')
 
-        with open(f'temp_{args.training_data}.fasta', 'w') as handle:
-            SeqIO.write(dict2.values(), handle, 'fasta')
-        generate_from_file(f'temp_{args.training_data}.fasta', alphabet, esm_model, args, start_epoch)
 
-        esm_emb = []
-        for ec in list(ec_id_dict.keys()):
-            ids_for_query = list(ec_id_dict[ec])
-            esm_to_cat = [new_esm_emb[id] for id in ids_for_query]
-            esm_emb = esm_emb + esm_to_cat
-        esm_emb = torch.stack(esm_emb).to(device=device, dtype=dtype)
+    query.load_state_dict(checkpoints['query_state_dict'])
+    key.load_state_dict(checkpoints['key_state_dict'])
+    model.load_state_dict(checkpoints['model_state_dict'])
 
-        dist_map = get_dist_map(
-            ec_id_dict, esm_emb, device, dtype)
-
-    logger.info(f"The number of unique EC numbers: {len(dist_map.keys())}")
-    train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
     
-    if args.checkpoint is not None:
-        checkpoints = torch.load(args.checkpoint, map_location='cpu')
-        print(checkpoints['query_state_dict'])
-
-        query.load_state_dict(checkpoints['query_state_dict'])
-        key.load_state_dict(checkpoints['key_state_dict'])
-        model.load_state_dict(checkpoints['model_state_dict'])
-
-        print(checkpoints['model_state_dict'].keys())
-
     #======================== training =======-=================#
     # training
-    for epoch in range(start_epoch, epochs + 1):
-        smile_embed = None
-        rhea_map = None
-        
-        if epoch % args.evaluate_freq == 0:
+    smile_embed = None
+    if True:
             if smile_embed is None:
                 smile_embed = torch.load("Rhea_tensors.pt", map_location='cpu')
                 rhea_map = pd.read_csv("rhea2ec.tsv", sep='\t')  
                 if args.use_SMILE_cls_token:
                     for key_ in smile_embed:
                         smile_embed[key_] = [l[:1] for l in smile_embed[key_]]
-
             train_protein_emb = {}
             dataset = FastaBatchedDataset.from_file(
                 './data/' + args.training_data + '.fasta')
@@ -366,7 +315,7 @@ def main():
                                 smile_embed_ec.extend(smile_embed[str(rid + j)])
                             except:
                                 pass
-                
+                smile_embed_ec = []
                 if len(smile_embed_ec) == 0:
                     smile_embed_ec = torch.stack([torch.zeros(384, device=device) for _ in ids_for_query])
                     current_train_esm_emb = model.encoder_q(model.fuser(protein_emb_stacked, smile_embed_ec))
@@ -381,12 +330,17 @@ def main():
 
                 train_esm_emb = train_esm_emb + [current_train_esm_emb]
 
-            
+            if args.remap:
+                train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
+                dist_map = get_dist_map(
+                    ec_id_dict, train_esm_emb, device, dtype)
             train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
-            train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
-            cluster_center_model = get_cluster_center(train_esm_emb, ec_id_dict)
+            cluster_center_model = get_cluster_center(
+                train_esm_emb, ec_id_dict)
+            # torch.save(cluster_center_model, "cluster_center_model.pth")
+
             # test embedding construction
-            for eval_dataset in ['price', 'new', 'halogenase']:
+            for eval_dataset in ['price']:#, 'new', 'halogenase']:
                 dataset = FastaBatchedDataset.from_file(
                     f'./data/{eval_dataset}.fasta')
                 batches = dataset.get_batch_indices(
@@ -418,7 +372,7 @@ def main():
                             test_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args, value=value)
                 
                 
-                total_ec_n, out_dim = len(ec_id_dict.keys()), train_esm_emb.size(1)
+                total_ec_n, out_dim = len(ec_id_dict.keys()), args.out_dim
                 model_lookup = torch.zeros(total_ec_n, out_dim, device=device, dtype=dtype)
                 ecs = list(cluster_center_model.keys())
                 id_ec_test, ec_id_dict_test = get_ec_id_dict(f'./data/{eval_dataset}.csv')
@@ -434,7 +388,6 @@ def main():
                 for ec in tqdm(list(ec_id_dict.keys())):
                     rhea_ids = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values
                     smile_embeds = []
-
                     if len(rhea_ids) > 0:
                         for rid in rhea_ids:
                             for j in range(4):
@@ -442,7 +395,7 @@ def main():
                                     smile_embeds.extend(smile_embed[str(rid + j)])
                                 except:
                                     pass
-  
+                    smile_embeds = []
                     if len(smile_embeds) == 0:
                         smile_embeds = [torch.zeros((1, 384))]
 
@@ -456,7 +409,9 @@ def main():
                     for i, key1 in enumerate(ids):
                         # dist_norm = [(test_protein_emb_i[j][i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2) for j in range(len(current_smile_embeds))]
                         dist_norm = (test_protein_emb_[i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2)
-                        dist_norm = torch.stack(dist_norm).mean(0).detach().cpu().numpy()
+                        # dist_norm = torch.stack(dist_norm).mean(0).detach().cpu().numpy()
+                        dist_norm = dist_norm.detach().cpu().numpy()
+
                         # print(dist_norm)
                         if key1 not in dist:
                             dist[key1] = {}
@@ -477,190 +432,9 @@ def main():
 
                     logger.info(f'total samples: {len(true_label)} | total ec: {len(all_label)}')
                     logger.info(f'precision: {pre:.3} | recall: {rec:.3} | F1: {f1:.3} | AUC: {roc:.3} ')
-                    wandb_logger.log({f'eval/{eval_dataset}/precision': pre, 
-                                    f'eval/{eval_dataset}/recall': rec,
-                                    f'eval/{eval_dataset}/F1': f1,
-                                    f'eval/{eval_dataset}/AUC': roc,
-                                    f'eval/{eval_dataset}/acc': acc})
                 except:
                     pass
-
-
-            train_protein_emb = {}
-            dataset = FastaBatchedDataset.from_file(
-                './data/' + args.training_data + '.fasta')
-            batches = dataset.get_batch_indices(
-                4096, extra_toks_per_seq=1)
-            data_loader = torch.utils.data.DataLoader(
-                dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
-            )
-
-            with torch.no_grad():
-                for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-                    batch_lens = (toks != alphabet.padding_idx).sum(1)
-                    if batch_idx % 100 == 0:
-                        logger.info(
-                            f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
-                        )
-                    toks = toks.to(device="cuda", non_blocking=True)
-                    out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
-                    representations = {
-                        layer: t.to(device="cpu") for layer, t in out["representations"].items()
-                    }
-
-                    for i, label in enumerate(labels):
-                        tokens_len = batch_lens[i]
-                        temp = {
-                            layer: t[i, 1 : tokens_len - 1].clone()
-                            for layer, t in representations.items()
-                        }
-                        feature = temp[args.repr_layer].cuda()                        
-                        train_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args, value=value)
-                            
-            # train embedding construction
-            train_esm_emb = []
-            for ec in list(ec_id_dict.keys()):
-                ids_for_query = list(ec_id_dict[ec])
-                rhea_id = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values
-                smile_embed_ec = []
-                protein_emb_stacked = torch.stack([train_protein_emb[id] for id in ids_for_query]).to(device) # protein embed with same EC 
-                if len(smile_embed_ec) == 0:
-                    smile_embed_ec = torch.stack([torch.zeros(384, device=device) for _ in ids_for_query])
-                    current_train_esm_emb = model.encoder_q(model.fuser(protein_emb_stacked, smile_embed_ec))
-                else:
-                    if not args.use_random_augmentation:
-                        smile_embed_ec = torch.cat(smile_embed_ec, 0).mean(0, keepdims=True).repeat(len(ids_for_query), 1).to(device)
-                        current_train_esm_emb = model.encoder_q(model.fuser(protein_emb_stacked, smile_embed_ec))
-                    else:
-                        smile_embed_ec = [embed.mean(0, keepdims=True).repeat(len(ids_for_query), 1).to(device) for embed in smile_embed_ec]
-                        train_esm_emb_i = [model.encoder_q(model.fuser(protein_emb_stacked, embed)) for embed in smile_embed_ec]
-                        current_train_esm_emb = sum(train_esm_emb_i) / len(train_esm_emb_i)
-
-                train_esm_emb = train_esm_emb + [current_train_esm_emb]
-            train_esm_emb = torch.cat(train_esm_emb, 0).to(device=device, dtype=dtype)
-            if args.remap:
-                dist_map = get_dist_map(
-                    ec_id_dict, train_esm_emb, device, dtype)
-                train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
-            cluster_center_model = get_cluster_center(
-                train_esm_emb, ec_id_dict)
-            # test embedding construction
-            for eval_dataset in ['price', 'new', 'halogenase']:
-                dataset = FastaBatchedDataset.from_file(
-                    f'./data/{eval_dataset}.fasta')
-                batches = dataset.get_batch_indices(
-                    4096, extra_toks_per_seq=1)
-                data_loader = torch.utils.data.DataLoader(
-                    dataset, collate_fn=alphabet.get_batch_converter(1022), batch_sampler=batches
-                )
-
-                test_protein_emb = {}
-                with torch.no_grad():
-                    for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-                        if batch_idx % 100 == 0:
-                            logger.info(
-                                f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
-                            )
-                        toks = toks.to(device="cuda", non_blocking=True)
-                        out = esm_model(toks, repr_layers=[args.repr_layer], return_contacts=False)
-                        representations = {
-                            layer: t.to(device="cpu") for layer, t in out["representations"].items()
-                        }
-                        batch_lens = (toks != alphabet.padding_idx).sum(1)
-                        
-                        for i, label in enumerate(labels):
-                            temp = {
-                                layer: t[i, 1 : batch_lens[i] - 1].clone()
-                                for layer, t in representations.items()
-                            }
-                            feature = temp[args.repr_layer].cuda()
-                            test_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args, value=value)
                 
-                
-                total_ec_n, out_dim = len(ec_id_dict.keys()), train_esm_emb.size(1)
-                model_lookup = torch.zeros(total_ec_n, out_dim, device=device, dtype=dtype)
-                ecs = list(cluster_center_model.keys())
-                id_ec_test, ec_id_dict_test = get_ec_id_dict(f'./data/{eval_dataset}.csv')
-                ids_for_query = list(id_ec_test.keys())
-                test_protein_emb_to_cat = [test_protein_emb[id] for id in ids_for_query]
-                test_protein_emb = torch.stack(test_protein_emb_to_cat)
-
-                for i, ec in enumerate(ecs):
-                    model_lookup[i] = cluster_center_model[ec]
-                
-                ids = list(id_ec_test.keys())
-                dist = {}
-                for ec in tqdm(list(ec_id_dict.keys())):
-                    rhea_ids = rhea_map.loc[rhea_map.ID == ec, 'RHEA_ID'].values
-                    smile_embeds = []
-                    if len(smile_embeds) == 0:
-                        smile_embeds = [torch.zeros((1, 384))]
-
-                    current_smile_embeds = [smile_embed_ec.unsqueeze(0).repeat(test_protein_emb.shape[0], 1, 1).cuda().mean(1) for smile_embed_ec in smile_embeds]
-                    # print(current_smile_embed.shape)
-
-                    test_protein_emb_i = [model.encoder_q(model.fuser(test_protein_emb, current_smile_embed)) for current_smile_embed in current_smile_embeds]
-
-                    # eval_dist = dist_map_helper(ids, test_protein_emb, ecs, model_lookup)
-                    
-                    for i, key1 in enumerate(ids):
-                        dist_norm = [(test_protein_emb_i[j][i].cuda().reshape(-1) - cluster_center_model[ec].cuda().reshape(-1)).norm(dim=0, p=2) for j in range(len(current_smile_embeds))]
-                        dist_norm = torch.stack(dist_norm).mean(0).detach().cpu().numpy()
-                        # print(dist_norm)
-                        if key1 not in dist:
-                            dist[key1] = {}
-                        dist[key1][ec] = dist_norm
-                    
-                eval_dist = dist
-                eval_df = pd.DataFrame.from_dict(eval_dist)
-                eval_df = eval_df.astype(float)
-                out_filename = f"results/{eval_dataset}_{args.model_name}" 
-                write_max_sep_choices(eval_df, out_filename, gmm=None)
-                
-                pred_label = get_pred_labels(out_filename, pred_type='_maxsep')
-                pred_probs = get_pred_probs(out_filename, pred_type='_maxsep')
-                true_label, all_label = get_true_labels(f'./data/{eval_dataset}')
-                try:
-                    pre, rec, f1, roc, acc = get_eval_metrics(
-                        pred_label, pred_probs, true_label, all_label)
-
-                    logger.info(f'total samples: {len(true_label)} | total ec: {len(all_label)}')
-                    logger.info(f'precision: {pre:.3} | recall: {rec:.3} | F1: {f1:.3} | AUC: {roc:.3} ')
-                    wandb_logger.log({f'eval_no_smile/{eval_dataset}/precision': pre, 
-                                    f'eval_no_smile/{eval_dataset}/recall': rec,
-                                    f'eval_no_smile/{eval_dataset}/F1': f1,
-                                    f'eval_no_smile/{eval_dataset}/AUC': roc,
-                                    f'eval_no_smile/{eval_dataset}/acc': acc})
-                except:
-                    pass
-
-        # assert False
-        # -------------------------------------------------------------------- #
-        epoch_start_time = time.time()
-        train_loss = train(model, args, epoch, train_loader, static_embed_loader,
-                           optimizer, device, dtype, criterion, 
-                           esm_model, esm_optimizer, seq_dict, 
-                           batch_converter, alphabet, attentions, attentions_optimizer, wandb_logger,
-                           ec_number_classifier=ec_number_classifier, ec_classifier_optimizer=ec_classifier_optimizer,
-                           score_matrix=score_matrix, cosine_score_matrix=cosine_score_matrix)
-        scheduler.step()
-        attn_scheduler.step()
-        # only save the current best model near the end of training
-        if (train_loss < best_loss):
-            save_state_dicts(model, esm_model, query, key,
-                             optimizer, esm_optimizer, attentions_optimizer,
-                             args, is_best=True, output_name=model_name, save_esm=False)
-            best_loss = train_loss
-            logger.info(f'Best from epoch : {epoch:3d}; loss: {train_loss:6.4f}')
-        else:
-            save_state_dicts(model, esm_model, query, key,
-                            optimizer, esm_optimizer, attentions_optimizer,
-                            args, is_best=train_loss < best_loss, output_name=model_name, save_esm=False)
-        elapsed = time.time() - epoch_start_time
-
-        logger.info(f'| end of epoch {epoch:3d} | time: {elapsed:5.2f}s | '
-              f'training loss {train_loss:6.4f}')
-
     wandb_logger.finish()
     # remove tmp save weights
 

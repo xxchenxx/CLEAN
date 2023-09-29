@@ -178,6 +178,7 @@ def parse_args():
     parser.add_argument('--use_SMILE_cls_token', action="store_true")
     parser.add_argument('--no_wandb', action="store_true")
     parser.add_argument('--remap', action="store_true")
+    parser.add_argument('--add_one_fix', action="store_true")
     parser.add_argument('--distance_loss_coef', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=0.01)
 

@@ -3,6 +3,14 @@ from esm import FastaBatchedDataset, pretrained
 import os
 import numpy as np
 
+def softmax_one(x, dim=None, _stacklevel=3, dtype=None):
+    #subtract the max for stability
+    x = x - x.max(dim=dim, keepdim=True).values
+    #compute exponentials
+    exp_x = torch.exp(x)
+    #compute softmax values and add on in the denominator
+    return exp_x / (1 + exp_x.sum(dim=dim, keepdim=True))
+
 def generate_from_file(file, alphabet, esm_model, args, start_epoch=1, save=True):
     dataset = FastaBatchedDataset.from_file(file)
     batches = dataset.get_batch_indices(
@@ -38,11 +46,17 @@ def generate_from_file(file, alphabet, esm_model, args, start_epoch=1, save=True
 
 def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, attn_mask=None, return_prob=False, value=None):
     
+    if args.add_one_fix:
+        softmax = softmax_one
+    else:
+        softmax = torch.softmax
     if len(feature.shape) == 2:
         if not args.use_extra_attention:
             return feature.mean(0)
         else:
+
             q = query(feature)
+
             if learnable_k is not None:
                 k = key(learnable_k)
             elif args.use_input_as_k:
@@ -51,6 +65,7 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 k = key(feature)
 
             raw = torch.einsum('jk,lk->jl', k, q) / np.sqrt(q.shape[-1])
+
             if args.use_top_k:                
                 shape = raw.shape
                 raw = raw.reshape(-1, raw.shape[-1])
@@ -61,13 +76,13 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 smallest = smallest.reshape(shape).bool().to(raw.device)
                 raw = raw.reshape(shape)
                 raw[smallest] = raw[smallest] + float('-inf')
-                prob = torch.softmax(raw, -1) # N x 1
+                prob = softmax(raw, -1) # N x 1
             elif args.use_top_k_sum:
                 
                 weights = raw.sum(-2, keepdim=True)
-                prob = torch.softmax(weights, -1)
+                prob = softmax(weights, -1)
             else:
-                prob = torch.softmax(raw, 1) # N x 1
+                prob = softmax(raw, 1) # N x 1
             if value is not None:
                 if not return_prob:
                     return (prob @ value(feature)).mean(0)
@@ -81,6 +96,7 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
     else: # 3-D features with paddings
         assert avg_mask is not None
         assert attn_mask is not None
+
         q = query(feature)
         if learnable_k is not None:
             k = key(learnable_k).unsqueeze(0).repeat(q.shape[0], 1, 1)
@@ -88,7 +104,9 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
             k = key(feature.mean(1, keepdim=True))
         else:
             k = key(feature)
+
         raw = torch.einsum('ijk,ilk->ijl', k, q) / np.sqrt(q.shape[-1]) + attn_mask
+
         if args.use_top_k:
             shape = raw.shape
             raw = raw.reshape(-1, raw.shape[-1])
@@ -99,21 +117,20 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
             smallest = smallest.reshape(shape).bool()
             raw = raw.reshape(shape)
             raw[smallest] = raw[smallest] + float('-inf')
-            prob = torch.softmax(raw, -1) 
+            prob = softmax(raw, -1) 
         elif args.use_top_k_sum:
             
             weights = raw.sum(-2, keepdim=True)
             for i in range(len(weights)):
                 weights[i, 0][avg_mask[i] == 0] = -float("inf")
-            prob = torch.softmax(weights, -1)
+            prob = softmax(weights, -1)
         else:
-            prob = torch.softmax(raw, -1) 
+            prob = softmax(raw, -1) 
         
         if value is not None:
             multiplied = torch.bmm(prob, value(feature))
         else:
             multiplied = torch.bmm(prob, feature)
-
 
         if not args.use_top_k_sum:
             if not return_prob:
@@ -126,3 +143,4 @@ def forward_attentions(feature, query, key, learnable_k, args, avg_mask=None, at
                 return multiplied.squeeze(-2)
             else:
                 return multiplied.squeeze(-2), prob, raw
+        
