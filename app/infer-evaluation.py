@@ -420,6 +420,7 @@ def main():
                 eval_dist = dist
                 eval_df = pd.DataFrame.from_dict(eval_dist)
                 eval_df = eval_df.astype(float)
+                print(eval_df)
                 out_filename = f"results/{eval_dataset}_{args.model_name}" 
                 write_max_sep_choices(eval_df, out_filename, gmm=None)
                 
