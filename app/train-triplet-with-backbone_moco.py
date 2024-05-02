@@ -92,7 +92,7 @@ def train(model, args, epoch, train_loader, static_embed_loader,
     total_loss = 0.
     start_time = time.time()
     esm_model.train()
-    query, key = attentions
+    query, key, value = attentions
 
     for batch, data in enumerate(static_embed_loader):
         optimizer.zero_grad()
@@ -111,9 +111,9 @@ def train(model, args, epoch, train_loader, static_embed_loader,
             anchor = torch.sum(anchor_original * anchor_avg_mask.unsqueeze(-1), 1)
         else:
             positive = forward_attentions(positive_original, query, key, learnable_k, args, avg_mask=positive_avg_mask,
-                                          attn_mask=positive_attn_mask)
+                                          attn_mask=positive_attn_mask, value=value)
             
-            anchor = forward_attentions(anchor_original, query, key, learnable_k, args, avg_mask=anchor_avg_mask, attn_mask=anchor_attn_mask)
+            anchor = forward_attentions(anchor_original, query, key, learnable_k, args, avg_mask=anchor_avg_mask, attn_mask=anchor_attn_mask, value=value)
         metrics = {}
         if args.use_ranking_loss:
             output, target, q = model(anchor.to(device=device, dtype=dtype), positive.to(device=device, dtype=dtype))
@@ -219,7 +219,11 @@ def main():
     best_loss = float('inf')
 
     learnable_k, attentions, attentions_optimizer = get_attention_modules(args, lr, device)
-    query, key = attentions
+    if args.use_v:
+        query, key, value = attentions
+    else:
+        query, key = attentions
+        value = None
     #======================== generate embed =================#
     start_epoch = 1
     
@@ -303,7 +307,7 @@ def main():
                             for layer, t in representations.items()
                         }
                         feature = temp[args.repr_layer].cuda()                        
-                        train_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args)
+                        train_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args, value=value)
                             
             # train embedding construction
             train_esm_emb = []
@@ -347,7 +351,7 @@ def main():
                                 for layer, t in representations.items()
                             }
                             feature = temp[args.repr_layer].cuda()
-                            test_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args)
+                            test_protein_emb[label] = forward_attentions(feature, query, key, learnable_k, args, value=value)
                 
                 
                 total_ec_n, out_dim = len(ec_id_dict.keys()), train_esm_emb.size(1)
