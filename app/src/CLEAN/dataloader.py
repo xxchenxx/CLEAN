@@ -261,19 +261,29 @@ class MoCo_dataset_with_mine_EC_and_SMILE(torch.utils.data.Dataset):
         for ec in ec_id.keys():
             if '-' not in ec:
                 self.full_list.append(ec)
-        self.smile_embed = torch.load("Rhea_tensors.pt", map_location='cpu')
-        self.rhea_map = pd.read_csv("rhea2ec.tsv", sep='\t')
-        self.all_ecs = self.rhea_map.ID.values
-        self.negative_mode = 'random'
-        self.rhea_keys = list(self.smile_embed.keys())
-
+        try:
+            self.smile_embed = torch.load("Rhea_tensors.pt", map_location='cpu')
+            self.smile_embed_shape = next(iter(self.smile_embed.items()))[1][0].shape
+        except:
+            self.smile_embed = None
+            self.smile_embed_shape = None
+        try:
+            self.rhea_map = pd.read_csv("rhea2ec.tsv", sep='\t')
+            self.all_ecs = self.rhea_map.ID.values
+            self.negative_mode = 'random'
+            self.rhea_keys = list(self.smile_embed.keys())
+        except:
+            self.rhea_map = None
+            self.all_ecs = None
+            self.negative_mode = 'random'
+            self.rhea_keys = None
         if use_SMILE_cls_token:
             for key in self.smile_embed:
                 self.smile_embed[key] = [l[:1] for l in self.smile_embed[key]]
 
         self.use_random_augmentation = use_random_augmentation
         self.return_name = return_name
-        self.smile_embed_shape = next(iter(self.smile_embed.items()))[1][0].shape
+        
         self.use_SMILE_cls_token = use_SMILE_cls_token
 
     def _get_smile_embed(self, anchor_ec):
