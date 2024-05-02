@@ -159,13 +159,11 @@ def train(model, args, epoch, train_loader, static_embed_loader,
         if batch % print_freq == 0:
             lr = args.learning_rate
             ms_per_batch = (time.time() - start_time) * 1000
-            cur_loss = loss.item()
             log_string =  f'| epoch {epoch:3d} | {batch:5d}/{len(static_embed_loader):5d} batches | ' + \
-                f'lr {lr:02.4f} | ms/batch {ms_per_batch:6.4f} | ' + \
-                f'loss {cur_loss:5.2f} | aux loss {aux_loss:5.2f} | '
+                f'lr {lr:02.4f} | ms/batch {ms_per_batch:6.4f} | aux loss {aux_loss:5.2f} | '
                 
             for metric_key in metrics:
-                log_string = log_string + f"{metric_key} {metrics[metric_key]} | "
+                log_string = log_string + f"{metric_key} {metrics[metric_key]:5.2f} | "
             logger.info(log_string)
             start_time = time.time()
     # record running average training loss
