@@ -119,7 +119,7 @@ def get_attention_modules(args, lr, device):
         if args.use_learnable_k:
             attentions_optimizer = torch.optim.AdamW([{"params": query.parameters(), "lr": lr, "momentum": 0.9}, {"params": key.parameters(), "lr": args.attention_learning_rate, "weight_decay": args.attention_weight_decay, "momentum": 0.9}, {"params": learnable_k, "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay, }])
         elif args.use_v:
-            attentions_optimizer = torch.optim.AdamW([{"params": query.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}, {"params": key.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}, {"params": v.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}])
+            attentions_optimizer = torch.optim.AdamW([{"params": query.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}, {"params": key.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}, {"params": value.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}])
         else:
             attentions_optimizer = torch.optim.AdamW([{"params": query.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}, {"params": key.parameters(), "lr": args.attention_learning_rate, "momentum": 0.9, "weight_decay": args.attention_weight_decay}])
         if not args.use_v:
