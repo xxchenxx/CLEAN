@@ -51,7 +51,7 @@ def save_state_dicts(model, esm_model, query,
         ))
     else:
         torch.save(state_dicts_to_save, os.path.join(
-            output_dir, f'{output_name}_checkpoints.pth.tar'
+            output_dir, f'{output_name}_checkpoints_{epoch}.pth.tar'
         ))
     log.info(f"Saving state_dicts at epoch {epoch}")
     
