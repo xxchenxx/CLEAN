@@ -410,16 +410,16 @@ def main():
                            score_matrix=score_matrix, cosine_score_matrix=cosine_score_matrix)
         scheduler.step()
         # only save the current best model near the end of training
+        save_state_dicts(model, esm_model, query, key,
+                            optimizer, esm_optimizer, attentions_optimizer,
+                            args, is_best=False, output_name=model_name, save_esm=False, epoch=epoch)
         if (train_loss < best_loss):
             save_state_dicts(model, esm_model, query, key,
                              optimizer, esm_optimizer, attentions_optimizer,
                              args, is_best=True, output_name=model_name, save_esm=False)
             best_loss = train_loss
             logger.info(f'Best from epoch : {epoch:3d}; loss: {train_loss:6.4f}')
-        else:
-            save_state_dicts(model, esm_model, query, key,
-                            optimizer, esm_optimizer, attentions_optimizer,
-                            args, is_best=train_loss < best_loss, output_name=model_name, save_esm=False, epoch=epoch)
+        
         elapsed = time.time() - epoch_start_time
 
         logger.info(f'| end of epoch {epoch:3d} | time: {elapsed:5.2f}s | '
