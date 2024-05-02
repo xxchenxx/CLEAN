@@ -251,48 +251,47 @@ def main():
     # ======================== generate embed ================= #
     start_epoch = 1
 
-    if True:
-        new_esm_emb = {}
+    new_esm_emb = {}
 
-        file_1 = open('./data/' + args.training_data + '.fasta')
-        file_2 = open('./data/' + args.training_data + '_single_seq_ECs.fasta')
-        dict1 = SeqIO.to_dict(SeqIO.parse(file_1, "fasta"))
-        dict2 = SeqIO.to_dict(SeqIO.parse(file_2, "fasta"))
-        original = len(list(dict1.keys()))
-        
-        for key_ in list(dict1.keys()):
-            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
-                del dict1[key_]
-                # print(f"{key_} founded!")
-                new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt").mean(0).detach().cpu()
-        remain = len(dict1)
-        logger.info(f"Need to parse {remain}/{original}")
-        with open(f'temp_{args.training_data}.fasta', 'w') as handle:
-            SeqIO.write(dict1.values(), handle, 'fasta')
+    file_1 = open('./data/' + args.training_data + '.fasta')
+    file_2 = open('./data/' + args.training_data + '_single_seq_ECs.fasta')
+    dict1 = SeqIO.to_dict(SeqIO.parse(file_1, "fasta"))
+    dict2 = SeqIO.to_dict(SeqIO.parse(file_2, "fasta"))
+    original = len(list(dict1.keys()))
+    
+    for key_ in list(dict1.keys()):
+        if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
+            del dict1[key_]
+            # print(f"{key_} founded!")
+            new_esm_emb[key_] = torch.load(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt").mean(0).detach().cpu()
+    remain = len(dict1)
+    logger.info(f"Need to parse {remain}/{original}")
+    with open(f'temp_{args.training_data}.fasta', 'w') as handle:
+        SeqIO.write(dict1.values(), handle, 'fasta')
 
-        new_esm_emb_created = generate_from_file(f'temp_{args.training_data}.fasta', alphabet, esm_model, args, start_epoch)
-        new_esm_emb.update(new_esm_emb_created)
-        original = len(list(dict2.keys()))
-        for key_ in list(dict2.keys()):
-            if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
-                del dict2[key_]
-        
-        remain = len(dict2)
-        logger.info(f"Need to parse {remain}/{original}")
+    new_esm_emb_created = generate_from_file(f'temp_{args.training_data}.fasta', alphabet, esm_model, args, start_epoch)
+    new_esm_emb.update(new_esm_emb_created)
+    original = len(list(dict2.keys()))
+    for key_ in list(dict2.keys()):
+        if os.path.exists(args.temp_esm_path + f"/epoch{start_epoch}/" + key_ + ".pt"):
+            del dict2[key_]
+    
+    remain = len(dict2)
+    logger.info(f"Need to parse {remain}/{original}")
 
-        with open(f'temp_{args.training_data}.fasta', 'w') as handle:
-            SeqIO.write(dict2.values(), handle, 'fasta')
-        generate_from_file(f'temp_{args.training_data}.fasta', alphabet, esm_model, args, start_epoch)
+    with open(f'temp_{args.training_data}.fasta', 'w') as handle:
+        SeqIO.write(dict2.values(), handle, 'fasta')
+    generate_from_file(f'temp_{args.training_data}.fasta', alphabet, esm_model, args, start_epoch)
 
-        esm_emb = []
-        for ec in list(ec_id_dict.keys()):
-            ids_for_query = list(ec_id_dict[ec])
-            esm_to_cat = [new_esm_emb[id] for id in ids_for_query]
-            esm_emb = esm_emb + esm_to_cat
-        esm_emb = torch.stack(esm_emb).to(device=device, dtype=dtype)
+    esm_emb = []
+    for ec in list(ec_id_dict.keys()):
+        ids_for_query = list(ec_id_dict[ec])
+        esm_to_cat = [new_esm_emb[id] for id in ids_for_query]
+        esm_emb = esm_emb + esm_to_cat
+    esm_emb = torch.stack(esm_emb).to(device=device, dtype=dtype)
 
-        dist_map = get_dist_map(
-            ec_id_dict, esm_emb, device, dtype)
+    dist_map = get_dist_map(
+        ec_id_dict, esm_emb, device, dtype)
 
     logger.info(f"The number of unique EC numbers: {len(dist_map.keys())}")
     train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
