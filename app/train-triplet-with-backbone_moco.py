@@ -419,7 +419,7 @@ def main():
         else:
             save_state_dicts(model, esm_model, query, key,
                             optimizer, esm_optimizer, attentions_optimizer,
-                            args, is_best=train_loss < best_loss, output_name=model_name, save_esm=False)
+                            args, is_best=train_loss < best_loss, output_name=model_name, save_esm=False, epoch=epoch)
         elapsed = time.time() - epoch_start_time
 
         logger.info(f'| end of epoch {epoch:3d} | time: {elapsed:5.2f}s | '
