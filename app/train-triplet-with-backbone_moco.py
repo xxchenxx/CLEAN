@@ -92,8 +92,11 @@ def train(model, args, epoch, train_loader, static_embed_loader,
     total_loss = 0.
     start_time = time.time()
     esm_model.train()
-    query, key, value = attentions
-
+    try:
+        query, key, value = attentions
+    except:
+        query, key = attentions
+        value = None
     for batch, data in enumerate(static_embed_loader):
         optimizer.zero_grad()
         anchor_original, positive_original, anchor_attn_mask, positive_attn_mask, anchor_avg_mask, positive_avg_mask, ec_numbers = data
