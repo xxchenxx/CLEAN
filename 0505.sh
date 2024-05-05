@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 nohup python -u ./train-triplet-with-backbone_moco.py  --training_data split10 --model_name base_attention_attn_lr_1e-6_no_attn --epoch 1000 --temp_esm_path moco_path_12/ --train_esm_rate 1000 --adaptive_rate 1000 --esm_model esm2_t12_35M_UR50D.pt --esm_model_dim 480 --repr_layer 12 --evaluate_freq 25 --seed 11 --batch_size 100 &
