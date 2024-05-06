@@ -87,7 +87,8 @@ def get_dataloader(dist_map, id_ec, ec_id, args, temp_esm_path="./data/esm_data/
 
 def train(model, args, epoch, train_loader, static_embed_loader,
           optimizer, device, dtype, criterion, esm_model, esm_optimizer, seq_dict, batch_converter, alphabet, attentions, attentions_optimizer, wandb_logger, learnable_k=None, ec_number_classifier=None, ec_classifier_optimizer=None, score_matrix=None,
-          print_freq=1, cosine_score_matrix=None) :
+          print_freq=1, cosine_score_matrix=None,
+          scheduler=None, attention_scheduler=None):
     model.train()
     total_loss = 0.
     start_time = time.time()
@@ -155,8 +156,13 @@ def train(model, args, epoch, train_loader, static_embed_loader,
 
         loss.backward()
         optimizer.step()
+        
         if attentions_optimizer is not None:
             attentions_optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
+        if attention_scheduler is not None:
+            attention_scheduler.step()
         total_loss += loss.item()
         wandb_logger.log({'train/' + key: metrics[key] for key in metrics})
         if batch % print_freq == 0:
@@ -212,7 +218,7 @@ def main():
     #======================== initialize model =================#
     model = MoCo(args.hidden_dim, args.out_dim, device, dtype, esm_model_dim=args.esm_model_dim).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01, betas=(0.9, 0.999))
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=0, last_epoch=-1, verbose=False)
+    
     esm_optimizer = torch.optim.AdamW(esm_model.parameters(), lr=1e-6, betas=(0.9, 0.999))
     criterion = nn.CrossEntropyLoss().to(device)    
     ec_number_classifier = nn.Sequential(nn.Linear(args.esm_model_dim, 128), nn.ReLU(), nn.Linear(128, len(ec_id.keys()))).cuda()
@@ -220,6 +226,7 @@ def main():
     best_loss = float('inf')
 
     learnable_k, attentions, attentions_optimizer = get_attention_modules(args, lr, device)
+    
     if args.use_v:
         query, key, value = attentions
     else:
@@ -273,7 +280,10 @@ def main():
 
     logger.info(f"The number of unique EC numbers: {len(dist_map.keys())}")
     train_loader, static_embed_loader = get_dataloader(dist_map, id_ec, ec_id, args, args.temp_esm_path + f'/epoch{start_epoch}/')
-    
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch * len(static_embed_loader), eta_min=1e-5, last_epoch=-1, verbose=False)
+    if attentions_optimizer is not None:
+        attention_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(attentions_optimizer, T_max=args.epoch * len(static_embed_loader), eta_min=1e-5, last_epoch=-1, verbose=False)    
     #======================== training =======-=================#
     # training
     for epoch in range(start_epoch, epochs + 1):
@@ -410,8 +420,9 @@ def main():
                            esm_model, esm_optimizer, seq_dict, 
                            batch_converter, alphabet, attentions, attentions_optimizer, wandb_logger,
                            ec_number_classifier=ec_number_classifier, ec_classifier_optimizer=ec_classifier_optimizer,
-                           score_matrix=score_matrix, cosine_score_matrix=cosine_score_matrix)
-        scheduler.step()
+                           score_matrix=score_matrix, cosine_score_matrix=cosine_score_matrix,
+                           scheduler=scheduler, 
+                           attention_scheduler=attention_scheduler)
         # only save the current best model near the end of training
         if (epoch + 1) % 25 == 0:
             save_state_dicts(model, esm_model, query, key,
