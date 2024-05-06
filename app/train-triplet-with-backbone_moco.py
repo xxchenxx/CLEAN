@@ -284,6 +284,8 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch * len(static_embed_loader), eta_min=1e-5, last_epoch=-1, verbose=False)
     if attentions_optimizer is not None:
         attention_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(attentions_optimizer, T_max=args.epoch * len(static_embed_loader), eta_min=1e-5, last_epoch=-1, verbose=False)    
+    else:
+        attention_scheduler = None
     #======================== training =======-=================#
     # training
     for epoch in range(start_epoch, epochs + 1):
